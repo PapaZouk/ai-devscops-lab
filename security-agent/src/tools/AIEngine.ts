@@ -22,6 +22,7 @@ export class AIEngine {
     public async suggestFix(vulnerabilities: any[]): Promise<FixPlan | null> {
 
         console.log("Sending vulnerabilities to AI engine for fix suggestions...");
+        console.log(`Start time: ${new Date().toISOString()}`);
 
         const prompt = `You are DevSecOps AI assistant. Given the following vulnerabilities, suggest code fixes or mitigation steps for each one in a concise manner.
         
@@ -61,6 +62,8 @@ export class AIEngine {
             const rawJson = JSON.parse(content as string);
 
             const validatedPlan = FixPlanSchema.parse(rawJson);
+            console.log(`Fix plan received and validated successfully.`);
+            console.log(`End time: ${new Date().toISOString()}`);
             return validatedPlan;
         } catch (error) {
             if (error instanceof z.ZodError) {
@@ -70,5 +73,27 @@ export class AIEngine {
             }
             return null;
         }
+    }
+
+    public async generatePRDescription(vulnerabilities: any[]): Promise<{ title: string, body: string }> {
+        const summary = vulnerabilities.map(v => `- Fixed ${v.id} in ${v.packageName}`).join('\n');
+        const prompt = `Generate a GitHub Pull Request title and a professional description for these security fixes:\n${summary}`;
+        
+        const response = await this.openai.chat.completions.create({
+        model: this.model,
+        messages: [
+            { role: 'system', content: 'You are a professional assistant that generates GitHub PR titles and descriptions.' },
+            { role: 'user', content: prompt }
+        ],
+        max_tokens: 500,
+        temperature: 0.3,
+        });
+            
+        const prContent = response.choices[0]?.message?.content;
+        
+        return {
+            title: "security: fix multiple vulnerabilities identified by Snyk",
+            body: prContent || `This PR addresses the following vulnerabilities:\n${summary}`
+        };
     }
 }
