@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import * as path from "node:path";
 
 export class GitHubTool {
@@ -6,10 +6,6 @@ export class GitHubTool {
 
     constructor(private repoRoot: string) {
         this.currentBranchName = `fix/security-remediation-${Date.now()}`;
-    }
-
-    public getBranchName(): string {
-        return this.currentBranchName;
     }
 
     public createBranch(): void {
@@ -26,37 +22,47 @@ export class GitHubTool {
 
     public async createPullRequest(title: string, body: string): Promise<void> {
         console.log("Creating GitHub Pull Request automatically...");
-        
-        const prCommand = `gh pr create \
-            --title "${title}" \
-            --body "${body}" \
-            --head "${this.currentBranchName}" \
-            --base master`;
+        const result = spawnSync('gh', [
+            'pr', 'create',
+            '--title', title,
+            '--body', body,
+            '--head', this.currentBranchName,
+            '--base', 'master'
+        ], { 
+            cwd: this.repoRoot,
+            encoding: 'utf-8' 
+        });
 
-        try {
-            execSync(prCommand, { 
-                cwd: this.repoRoot, 
-                stdio: 'inherit' 
-            });
+        if (result.status === 0) {
             console.log("PR successfully opened on GitHub.");
-            this.switchToMaster();
-        } catch (error) {
-            console.error("Failed to create PR. Returning to master branch for safety.");
-            this.switchToMaster();
-            throw error;
+            console.log(result.stdout);
+            this.cleanupLocalBranch();
+        } else {
+            if (result.stderr?.includes("already exists")) {
+                console.log("PR already exists. Skipping creation and cleaning up.");
+                this.cleanupLocalBranch();
+            } else {
+                console.error("Failed to create PR:", result.stderr);
+                this.rollbackToMain();
+                throw new Error("GitHub PR creation failed.");
+            }
         }
     }
 
-    private switchToMaster(): void {
-        console.log("Switching back to master branch...");
+    private cleanupLocalBranch(): void {
+        console.log(`Cleaning up local branch: ${this.currentBranchName}`);
         try {
             execSync('git checkout master', { cwd: this.repoRoot, stdio: 'ignore' });
+            execSync(`git branch -D ${this.currentBranchName}`, { cwd: this.repoRoot, stdio: 'ignore' });
+            console.log("Local workspace is clean.");
         } catch (e) {
-            console.error("Could not switch to master. Ensure the branch name is correct.");
+            console.error("Cleanup failed, but PR might be live.");
         }
     }
 
     public rollbackToMain(): void {
-        this.switchToMaster();
+        try {
+            execSync('git checkout master', { cwd: this.repoRoot, stdio: 'ignore' });
+        } catch (e) {}
     }
 }
