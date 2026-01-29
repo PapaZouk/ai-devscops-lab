@@ -11,9 +11,9 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "axios": "^0.18.0",
-    "follow-redirects": "^1.15.6",
+    "follow-redirects": "^1.15.4",
     "lodash": "^4.17.15",
+    "or": "^0.2.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   },
@@ -22,6 +22,7 @@
     "@types/jest": "^30.0.0",
     "@types/lodash": "^4.17.23",
     "@types/node": "^25.1.0",
+    "axios": "^1.6.4",
     "jest": "^30.2.0"
   }
 }

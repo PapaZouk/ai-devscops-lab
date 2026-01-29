@@ -1,7 +1,7 @@
 {
   "vulnerabilities": [],
   "ok": true,
-  "dependencyCount": 20,
+  "dependencyCount": 21,
   "org": "papazouk",
   "policy": "# Snyk (https://snyk.io) policy file, patches or ignores known vulnerabilities.\nversion: v1.25.1\nignore: {}\npatch: {}\n",
   "isPrivate": true,
@@ -96,7 +96,8 @@
     "reasonRequired": false,
     "disregardFilesystemIgnores": false
   },
-  "summary": "No known vulnerabilities",
+  "summary": "No high or critical severity vulnerabilities",
+  "severityThreshold": "high",
   "filesystemPolicy": false,
   "uniqueCount": 0,
   "projectName": "victim-app",
