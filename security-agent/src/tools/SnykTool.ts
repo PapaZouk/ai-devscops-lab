@@ -21,10 +21,9 @@ export class SnykTool {
     public async scan(): Promise<Vulnerability[]> {
         console.log(`Scanning project at ${this.victimPath} using Snyk...`);
 
-        const result = spawnSync('snyk', ['test', '--json'], {
+        const result = spawnSync('snyk', ['test', '--json', '--severity-threshold=high'], {
             cwd: this.victimPath,
-            encoding: 'utf-8',
-            maxBuffer: 10 * 1024 * 1024 // 10MB buffer for large reports
+            encoding: 'utf-8'
         });
 
         if (result.status !== 0 && result.status !== 1) {
@@ -67,6 +66,7 @@ export class SnykTool {
                 });
             }
 
+            console.table(vulnerabilities, ['id', 'packageName', 'version', 'severity', 'fixedIn']);
             return vulnerabilities;
         } catch (error: any) {
             console.error("Failed to parse Snyk JSON. Output might not be valid JSON.");

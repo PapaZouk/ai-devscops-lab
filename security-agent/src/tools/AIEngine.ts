@@ -1,8 +1,6 @@
-import { format } from "node:path";
 import { FixPlanSchema, type FixPlan } from "../types/RemediationSchema";
-import z from "../../node_modules/zod/index.cjs";
-import { OpenAI } from "../../node_modules/openai/client";
-import { configDotenv } from "../../node_modules/dotenv/lib/main";
+import { OpenAI } from "openai";
+import { configDotenv } from "dotenv";
 
 configDotenv();
 
@@ -17,83 +15,104 @@ export class AIEngine {
         });
         this.model = process.env.AI_MODEL || 'llama3.2';
     }
-    
 
     public async suggestFix(vulnerabilities: any[]): Promise<FixPlan | null> {
+        console.log("Processing vulnerabilities for AI...");
 
-        console.log("Sending vulnerabilities to AI engine for fix suggestions...");
+        const thinnedData = vulnerabilities
+            .filter(v => v.severity === 'high' || v.severity === 'critical')
+            .map(v => ({
+                id: v.id,
+                package: v.packageName,
+                currentVersion: v.version,
+                fixAvailableIn: v.fixedIn
+            }));
+
+        if (thinnedData.length === 0) {
+            console.log("No high or critical vulnerabilities to process.");
+            return null;
+        }
+
+        console.log(`Sending ${thinnedData.length} issues to AI (${this.model})...`);
         console.log(`Start time: ${new Date().toISOString()}`);
 
-        const prompt = `You are DevSecOps AI assistant. Given the following vulnerabilities, suggest code fixes or mitigation steps for each one in a concise manner.
-        
-        Provide a fix plan in JSON for these vulnerabilities: ${JSON.stringify(vulnerabilities, null, 2)}.
-        Strictly follow the schema provided:
+        const prompt = `You are a DevSecOps AI assistant. 
+        Target Project Folder: victim-app
+
+        Vulnerabilities to fix: ${JSON.stringify(thinnedData, null, 2)}
+
+        TASK:
+        1. Identify the best version to upgrade to for each package based on "fixAvailableIn".
+        2. Combine these into a BATCH update command if possible to save time.
+        3. Provide the response strictly in JSON.
+
+        JSON SCHEMA:
         {
-            "summary": "A brief summary of the fix plan",
+            "summary": "Clear summary of versions being upgraded",
             "actions": [
                 {
-                    "package": "name of the package to fix",
-                    "command": "the npm command to run to fix it, e.g., npm install package@version",
-                    "reason": "a brief reason for this action"
+                    "package": "name(s) of the packages",
+                    "command": "npm install pkg1@ver1 pkg2@ver2 --save",
+                    "reason": "Fixes CVE-XXX, CVE-YYY"
                 }
             ],
-            "risk_level": "overall risk level: low, medium, high, or critical"
+            "risk_level": "low|medium|high|critical"
         }`;
 
         try {
             const response = await this.openai.chat.completions.create({
                 model: this.model,
                 messages: [
-                    { role: 'system', content: 'You are a helpful DevSecOps assistant.' },
+                    { role: 'system', content: 'You are a DevSecOps expert that provides batch remediation commands.' },
                     { role: 'user', content: prompt }
                 ],
                 max_tokens: 1000,
-                temperature: 0.2,
+                temperature: 0.1, // Lower temperature for more consistent JSON
                 response_format: { type: 'json_object' }
             });
 
             const content = response.choices[0]?.message?.content;
+            if (!content) return null;
 
-            if (!content) {
-                console.error("AI engine returned empty content.");
-                return null;
-            }
-
-            const rawJson = JSON.parse(content as string);
-
-            const validatedPlan = FixPlanSchema.parse(rawJson);
-            console.log(`Fix plan received and validated successfully.`);
+            const validatedPlan = FixPlanSchema.parse(JSON.parse(content));
+            console.log(`Batch fix plan received. Risk Level: ${validatedPlan.risk_level}`);
             console.log(`End time: ${new Date().toISOString()}`);
+            
             return validatedPlan;
         } catch (error) {
-            if (error instanceof z.ZodError) {
-                console.error("Validation error in AI response:", error.message);
-            } else {
-                console.error("Error communicating with AI engine:", error);
-            }
+            console.error("AI processing failed:", error);
             return null;
         }
     }
 
     public async generatePRDescription(vulnerabilities: any[]): Promise<{ title: string, body: string }> {
-        const summary = vulnerabilities.map(v => `- Fixed ${v.id} in ${v.packageName}`).join('\n');
-        const prompt = `Generate a GitHub Pull Request title and a professional description for these security fixes:\n${summary}`;
+        // Use thinned data here too for a faster, cleaner PR body
+        const summaryList = vulnerabilities
+            .filter(v => v.severity === 'high' || v.severity === 'critical')
+            .map(v => `- **${v.packageName}**: Fixed ${v.id} (${v.title})`)
+            .join('\n');
+
+        const prompt = `Create a professional GitHub PR description for these security fixes:\n${summaryList}`;
         
-        const response = await this.openai.chat.completions.create({
-        model: this.model,
-        messages: [
-            { role: 'system', content: 'You are a professional assistant that generates GitHub PR titles and descriptions.' },
-            { role: 'user', content: prompt }
-        ],
-        max_tokens: 500,
-        temperature: 0.3,
-        });
-            
-        const prContent = response.choices[0]?.message?.content;
-        
-        return {
-            title: "security: fix multiple vulnerabilities identified by Snyk",
-            body: prContent || `This PR addresses the following vulnerabilities:\n${summary}`
-        };
+        try {
+            const response = await this.openai.chat.completions.create({
+                model: this.model,
+                messages: [
+                    { role: 'system', content: 'You generate professional GitHub PR descriptions.' },
+                    { role: 'user', content: prompt }
+                ],
+                max_tokens: 500,
+            });
+
+            return {
+                title: `security: fix ${vulnerabilities.length} high/critical vulnerabilities`,
+                body: response.choices[0]?.message?.content || `Automated security fixes:\n${summaryList}`
+            };
+        } catch (e) {
+            return {
+                title: "security: automated vulnerability remediation",
+                body: `This PR addresses high-risk vulnerabilities:\n${summaryList}`
+            };
+        }
     }
 }
