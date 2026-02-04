@@ -15,6 +15,8 @@ export class SnykTool {
     private victimPath: string;
 
     constructor(relativeVictimPath: string) {
+        const __filename = new URL('', import.meta.url).pathname;
+        const __dirname = path.dirname(__filename);
         this.victimPath = path.resolve(__dirname, relativeVictimPath);
     }
 
