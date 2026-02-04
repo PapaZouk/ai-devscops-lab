@@ -4,6 +4,7 @@ export default {
   testEnvironment: 'node',
   testMatch: ['**/tests/**/*.test.ts'],
   extensionsToTreatAsEsm: ['.ts'],
+  errorOnDeprecated: true,
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
