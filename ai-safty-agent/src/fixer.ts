@@ -2,91 +2,83 @@ import chalk from "chalk";
 import OpenAI from "openai";
 import * as fs from "fs/promises";
 import z from "zod";
-import { zodToJsonSchema } from "openai/_vendor/zod-to-json-schema/zodToJsonSchema.js";
-import path from "path/win32";
+import { zodToJsonSchema } from "openai/_vendor/zod-to-json-schema/index.js";
+import path from "node:path";
+import { configDotenv } from "dotenv";
+
+configDotenv();
 
 const lmStudio = new OpenAI({
-    baseURL: process.env.LMSTUDIO_BASE_URL || "",
-    apiKey: process.env.LMSTUDIO_API_KEY || "",
+    baseURL: process.env.LMSTUDIO_BASE_URL || "http://localhost:1234/v1",
+    apiKey: "not-needed",
 });
 
 const FixResultSchema = z.object({
-    analysis: z.string(),
-    explanationOfChanges: z.string(),
+    analysis: z.string().optional().default("No analysis."),
+    explanationOfChanges: z.string().optional().default("Fixing imports/syntax."),
     fixedCode: z.string(),
-    confidencyScore: z.number().min(0).max(1),      
+    confidencyScore: z.number().optional().default(1),      
 });
 
 export async function attemptSurgicalFix(targetFile: string, testError: string) {
-    console.log(chalk.magenta.bold(`Attempting surgical fix for ${targetFile}...`));
+    console.log(chalk.magenta.bold(`\n🛠  Attempting surgical fix for ${path.basename(targetFile)}...`));
 
     const originalCode = await fs.readFile(targetFile, 'utf-8');
-
     const rawSchema = zodToJsonSchema((FixResultSchema as any), "FixResult");
 
-    const prompt = `
-        ROLE: Expert DevSecOps Engineer.
-        CONTEXT: An automated security update has changed one or more dependencies in this Node.js project. 
-        The file below is now failing its tests.
-
-        GOAL: Adjust the syntax to be compatible with the current environment and library versions.
-
-        STRICT CONSTRAINTS:
-        1. PRESERVE BUSINESS LOGIC: Do not modify algorithms, secret keys, variable values, or conditional flows.
-        2. MINIMAL INVASION: Only change the lines necessary to fix the error (usually imports or API calls).
-        3. ENVIRONMENT HARMONIZATION: Correct any hallucinated or invalid imports based on standard NPM conventions.
-        4. NO EXPLANATIONS: Return only the corrected source code. No markdown formatting.
-
-        ERROR LOG:
-        ${testError}
-
-        ORIGINAL SOURCE CODE:
-        ${originalCode}
-    `;
-
-    const response = await lmStudio.chat.completions.create({
-        model: process.env.LMSTUDIO_MODEL_NAME || "google/gemma-3-4b",
-        messages: [
-            { role: "system", content: "You are a helpful DevSecOps assistant." },
-            { role: "user", content: prompt }
-        ],
-        response_format: {
-            type: 'json_schema',
-            json_schema: {
-                name: 'fix_result',
-                strict: true,
-                schema: rawSchema,
-            },
-        },
-        temperature: 0.1,
-    });
+    // CRITICAL: Keep the prompt tiny for 4b models
+    const prompt = `Fix this Node.js file to pass tests after a library update. 
+    Return a JSON object with a "fixedCode" key containing the ENTIRE file content.
+    
+    ERROR: ${testError.substring(0, 300)}
+    SOURCE: ${originalCode}`;
 
     try {
+        const response = await lmStudio.chat.completions.create({
+            model: process.env.LMSTUDIO_MODEL_NAME || "google/gemma-3-4b",
+            messages: [
+                { role: "system", content: "You are a JSON-only response bot. No prose." },
+                { role: "user", content: prompt }
+            ],
+            response_format: {
+                type: 'json_schema',
+                json_schema: { name: 'fix', strict: false, schema: rawSchema },
+            },
+            temperature: 0,
+            max_tokens: 4096, // CRITICAL: Ensure this is not set to a low number in LM Studio
+        });
+
         const rawResponse = response.choices[0]?.message?.content?.trim() || "";
-        const result = FixResultSchema.parse(JSON.parse(rawResponse));
+        
+        console.log(chalk.magenta("\n--- [RAW AI RESPONSE] ---"));
+        console.log(rawResponse);
+        console.log(chalk.magenta("-------------------------\n"));
 
-        console.log(chalk.cyan("AI Analysis:"));
-        console.log(chalk.gray(result.analysis));
-        console.log(chalk.cyan("Explanation of Changes:"));
-        console.log(chalk.gray(result.explanationOfChanges));
-        console.log(chalk.cyan(`Confidency Score: ${result.confidencyScore}`));
-
-        if (result.confidencyScore < 0.5) {
-            console.log(chalk.red("Confidency score too low, aborting fix."));
+        let parsed;
+        // Logic to handle if the AI sends raw code instead of JSON
+        if (!rawResponse.startsWith("{")) {
+            console.log(chalk.yellow("AI ignored JSON format, extracting raw text..."));
+            parsed = { fixedCode: rawResponse };
+        } else {
+            const data = JSON.parse(rawResponse);
+            parsed = data.fix || data;
         }
 
-        if (result.fixedCode.length < 10) {   
-            console.log(chalk.red("Fixed code too short, aborting fix."));
-            throw new Error("AI returned empty code block");
+        const result = FixResultSchema.parse(parsed);
+
+        if (result.fixedCode.length < 20) {
+            throw new Error("AI returned truncated code.");
         }
 
         await fs.writeFile(`${targetFile}.bak`, originalCode);
         await fs.writeFile(targetFile, result.fixedCode, "utf-8");
-        console.log(chalk.green.bold(`Surgical fix applied to ${targetFile} successfully.`));
+        
+        console.log(chalk.green.bold(`✅ Fix applied.`));
         return true;
+
     } catch (error) {
-        console.error(chalk.red("Failed to apply surgical fix:"), error);
-        return false
+        console.error(chalk.red("Surgical fix failed:"), error);
+        return false;
     }
 }
 
@@ -97,5 +89,5 @@ export async function rollbackFile(targetFile: string) {
         await fs.writeFile(targetFile, content, "utf-8");
         await fs.unlink(backupPath);
         console.log(chalk.yellow(`Restored ${path.basename(targetFile)}`));
-    } catch (e) { /* no backup found */ }
+    } catch (e) {}
 }
