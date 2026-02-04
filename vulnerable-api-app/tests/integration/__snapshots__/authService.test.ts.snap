@@ -1,0 +1,7 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`Auth Integration Tests should login successfully with valid credentials 1`] = `
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwidXNlcm5hbWUiOiJhZG1pbiIsImlhdCI6MTc3MDIwMjYzNSwiZXhwIjoxNzcwMjA2MjM1fQ.M6n0A5Sd5ZsnMYepwpuF7hpdqxomwH7JZhM6htBpdiw",
+}
+`;
