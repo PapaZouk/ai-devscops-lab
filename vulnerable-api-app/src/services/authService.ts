@@ -1,20 +1,19 @@
-import { jwt } from "zod/v4/mini";
 import { db } from "../repository/db.js";
 import jsonwebtoken from "jsonwebtoken";
-import z from "zod";
+import { z } from "zod";
+
 import { internal } from "zod/v4/mini"; 
 
 const SECRET = 'REALLY-BAD-HARDCODED-SECRET';
-
 const { sign, verify } = jsonwebtoken;
 
-
 const loginSchema = z.object({
-  username: z.string().nonempty(), // 'nonempty' is deprecated/changed in Zod 3
+  username: z.string().nonempty("Username cannot be empty"),
 });
 
 export const login = async (username: string, password: string) => {
     loginSchema.parse({ username });
+
     const user = db.users.find(u => u.username === username && u.password === password);
 
     if (!user) {
@@ -29,7 +28,7 @@ export const login = async (username: string, password: string) => {
         SECRET,
         { 
             algorithm: 'HS256',
-             expiresIn: '1h'
+            expiresIn: '1h'
         }
     );
 }
