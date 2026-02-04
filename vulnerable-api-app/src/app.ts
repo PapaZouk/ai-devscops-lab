@@ -8,8 +8,11 @@ app.use(express.json());
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
 
-app.listen(3000, () => {
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  app.listen(3000, () => {
     console.log('Server is running on port 3000');
-});
+  });
+}
 
 export default app;
