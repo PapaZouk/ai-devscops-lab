@@ -41,6 +41,9 @@ async function startAIRemidiation() {
 
     const { stdout: scanOutput } = await execaAsync(`npm run scan`);
 
+    console.log(chalk.gray("Security scan completed. Findings:"));
+    console.log(chalk.yellow(scanOutput));
+
     console.log(chalk.yellow("Consulting AI for remediation steps..."));
 
     const rawSchema = zodToJsonSchema((RemediationStrategy as any), "RemediationStrategy");
@@ -102,10 +105,9 @@ function applyPatch(commands: string[]) {
     for (const cmd of commands) {
         console.log(chalk.gray(`Executing: ${cmd}`));
         try {
-            const { stdout, stderr } = exec(cmd, { cwd: API_ROOT });
-            if (stdout) console.log(chalk.green(stdout));
-            if (stderr) console.error(chalk.red(stderr));
-        } catch (error) {
+            const { stdout: executionOutput } = exec(cmd, { cwd: API_ROOT });
+            if (executionOutput) console.log(chalk.green(cmd));
+        } catch (error: any) {
             console.error(chalk.red(`Failed to execute command: ${cmd}`), error);
         }
     }
@@ -140,4 +142,7 @@ function rollback() {
 
 startAIRemidiation().catch((error) => {
     console.error(chalk.red("AI Remediation failed:"), error);
+}).finally(() => {
+    console.log(chalk.blue.bold("AI Remediation process finished."));
+    process.exit(0);
 });
