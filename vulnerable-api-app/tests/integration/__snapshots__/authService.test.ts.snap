@@ -2,6 +2,6 @@
 
 exports[`Auth Integration Tests should login successfully with valid credentials 1`] = `
 {
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwidXNlcm5hbWUiOiJhZG1pbiIsImlhdCI6MTc3MDIwMjYzNSwiZXhwIjoxNzcwMjA2MjM1fQ.M6n0A5Sd5ZsnMYepwpuF7hpdqxomwH7JZhM6htBpdiw",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwidXNlcm5hbWUiOiJhZG1pbiIsImlhdCI6MTc3MDIyMTYzNiwiZXhwIjoxNzcwMjI1MjM2fQ.QlagKar8EJbkYHn-OeiTmhPcWWJ2mdTbtHHtsCz6t7E",
 }
 `;
