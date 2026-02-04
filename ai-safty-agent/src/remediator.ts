@@ -8,6 +8,7 @@ import OpenAI from "openai";
 import { zodToJsonSchema } from "openai/_vendor/zod-to-json-schema/index.js";
 import z from "zod";
 import { attemptSurgicalFix, rollbackFile } from "./fixer.js";
+import fs from "node:fs/promises";
 
 configDotenv();
 
@@ -93,47 +94,33 @@ async function startAIRemidiation() {
             console.error(chalk.red.bold("Integrity issues detected. Identifying target file..."));
             const errorLog = integrityResult.lastTestError;
 
-            // Step 1: Try Regex Identification
-            const fileRegex = /(?:\/|[A-Z]:\\)[\w\/-]+\.ts/g; 
-            const matches = errorLog.match(fileRegex);
-            let targetFile = matches?.find((file: string) => file.includes('/src') && !file.includes('.test.ts')) || "";
+            // 1. Get all real source files from the actual disk
+            const srcPath = path.resolve(API_ROOT, "src");
+            const allSourceFiles = await getAllFiles(srcPath);
 
-            // Step 2: Fallback to AI Identification
-            if (!targetFile) {
-                console.log(chalk.yellow("Regex failed. Asking AI to guess the failing file..."));
+            // 2. Find which of these files is mentioned in the error log
+            // We check for the filename (e.g., authService.ts) inside the error text
+            const targetFile = allSourceFiles.find(filePath => {
+                const fileName = path.basename(filePath);
+                return errorLog.includes(fileName);
+            });
+
+            if (targetFile) {
+                console.log(chalk.green(`🎯 Found actual failing file: ${targetFile}`));
                 
-                const identifyResponse = await lmStudio.chat.completions.create({
-                    model: process.env.LMSTUDIO_MODEL_NAME || "google/gemma-3-4b",
-                    messages: [
-                        { 
-                            role: "user", 
-                            content: `Based on this error: "${errorLog}", which source file in the "src/" directory is broken? 
-                            Note: The source files are in "src/" and tests are in "tests/". 
-                            Return only the relative path to the SOURCE file (e.g., services/authService.ts).` 
-                        }
-                    ],
-                });
-
-                const fileName = identifyResponse.choices[0].message.content?.trim();
-
-                if (fileName) targetFile = path.resolve(API_ROOT, "src", fileName);
-            }
-
-            if (targetFile && targetFile.endsWith('.ts')) {
-                console.log(chalk.blue(`🚀 Surgical fix target: ${targetFile}`));
                 const fixed = await attemptSurgicalFix(targetFile, errorLog);
                 
                 if (fixed) {
                     const finalCheck = await checkIntegrity();
                     if (finalCheck.passed) {
                         console.log(chalk.green.bold("✨ AI successfully healed the code!"));
-                        return; // Success!
+                        return; 
                     }
                 }
+            } else {
+                console.error(chalk.red("❌ Could not find any project source files in the error log."));
             }
 
-            console.error(chalk.red("Fix attempt failed. Rolling back..."));
-            await rollbackFile(targetFile);
             await rollback();
         }
     } catch (error) {
@@ -177,6 +164,22 @@ async function checkIntegrity(): Promise<{ passed: boolean, lastTestError: strin
         
         return { passed: false, lastTestError: fullErrorReport };
     }
+}
+
+async function getAllFiles(dirPath: string, arrayOfFiles: string[] = []) {
+    const files = await fs.readdir(dirPath);
+
+    for (const file of files) {
+        const filePath = path.join(dirPath, file);
+        const stat = await fs.stat(filePath);
+
+        if (stat.isDirectory()) {
+            await getAllFiles(filePath, arrayOfFiles);
+        } else if (file.endsWith(".ts") && !file.endsWith(".test.ts")) {
+            arrayOfFiles.push(filePath);
+        }
+    }
+    return arrayOfFiles;
 }
 
 async function rollback() {
