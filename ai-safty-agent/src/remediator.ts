@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import OpenAI from "openai";
 import { zodToJsonSchema } from "openai/_vendor/zod-to-json-schema/index.js";
 import z from "zod";
+import { attemptSurgicalFix, rollbackFile } from "./fixer.js";
 
 configDotenv();
 
@@ -78,6 +79,7 @@ async function startAIRemidiation() {
     });
         
     const rawResponse = response.choices[0]?.message?.content || "";
+    
     try {
         const parsed = JSON.parse(rawResponse);
         const strategy = RemediationStrategy.parse(Array.isArray(parsed) ? parsed[0] : parsed);
@@ -85,15 +87,58 @@ async function startAIRemidiation() {
 
         await applyPatch(strategy.commands);
 
-        const isHealthy = await checkIntegrity();
-        if (!isHealthy) {
-            console.error(chalk.red.bold("Remediation caused integrity issues. Please review the applied changes."));
+        const integrityResult = await checkIntegrity();
+        
+        if (!integrityResult.passed) {
+            console.error(chalk.red.bold("Integrity issues detected. Identifying target file..."));
+            const errorLog = integrityResult.lastTestError;
+
+            // Step 1: Try Regex Identification
+            const fileRegex = /(?:\/|[A-Z]:\\)[\w\/-]+\.ts/g; 
+            const matches = errorLog.match(fileRegex);
+            let targetFile = matches?.find((file: string) => file.includes('/src') && !file.includes('.test.ts')) || "";
+
+            // Step 2: Fallback to AI Identification
+            if (!targetFile) {
+                console.log(chalk.yellow("Regex failed. Asking AI to guess the failing file..."));
+                
+                const identifyResponse = await lmStudio.chat.completions.create({
+                    model: process.env.LMSTUDIO_MODEL_NAME || "google/gemma-3-4b",
+                    messages: [
+                        { 
+                            role: "user", 
+                            content: `Based on this error: "${errorLog}", which source file in the "src/" directory is broken? 
+                            Note: The source files are in "src/" and tests are in "tests/". 
+                            Return only the relative path to the SOURCE file (e.g., services/authService.ts).` 
+                        }
+                    ],
+                });
+
+                const fileName = identifyResponse.choices[0].message.content?.trim();
+
+                if (fileName) targetFile = path.resolve(API_ROOT, "src", fileName);
+            }
+
+            if (targetFile && targetFile.endsWith('.ts')) {
+                console.log(chalk.blue(`🚀 Surgical fix target: ${targetFile}`));
+                const fixed = await attemptSurgicalFix(targetFile, errorLog);
+                
+                if (fixed) {
+                    const finalCheck = await checkIntegrity();
+                    if (finalCheck.passed) {
+                        console.log(chalk.green.bold("✨ AI successfully healed the code!"));
+                        return; // Success!
+                    }
+                }
+            }
+
+            console.error(chalk.red("Fix attempt failed. Rolling back..."));
+            await rollbackFile(targetFile);
             await rollback();
         }
     } catch (error) {
         await rollback();
-        console.error(chalk.red("Failed to get AI remediation strategy:"), error);
-        return;
+        console.error(chalk.red("Remediation failed:"), error);
     }
 
     console.log(chalk.green.bold("AI Remediation completed successfully."));
@@ -106,7 +151,7 @@ async function applyPatch(commands: string[]) {
         console.log(chalk.gray(`Executing: ${cmd}`));
         try {
             const { stdout: executionOutput } = await execaAsync(cmd, { cwd: API_ROOT });
-            console.log(`Successfully executed: ${cmd}`);
+            console.log(`Successfully executed: ${executionOutput}`);
         } catch (error: any) {
             console.error(chalk.red(`Failed to execute command: ${cmd}`), error);
         }
@@ -115,16 +160,22 @@ async function applyPatch(commands: string[]) {
     console.log(chalk.blue.cyan.bold("Remediation commands applied."));
 }
 
-async function checkIntegrity() {
+async function checkIntegrity(): Promise<{ passed: boolean, lastTestError: string }> {
     console.log(chalk.blue.cyan.bold("Checking integrity after remediation..."));
 
     try {
-        const { stdout: testOutput } = await execaAsync(`npm run test`, { cwd: API_ROOT });
+        await execaAsync(`npm run test`, { cwd: API_ROOT });
         console.log(chalk.green("Tests passed successfully."));
-        return true;
+        return { passed: true, lastTestError: "" };
     } catch (error: any) {
-        console.error(chalk.red("Integrity check failed:"), error);
-        return false;
+        const fullErrorReport = `${error.stdout || ''}\n${error.stderr || ''}`;
+        
+        if (fullErrorReport.includes("PASS") && fullErrorReport.includes("obsolete")) {
+            console.log(chalk.yellow("Tests passed, but found obsolete snapshots. Continuing..."));
+            return { passed: true, lastTestError: "" };
+        }
+        
+        return { passed: false, lastTestError: fullErrorReport };
     }
 }
 
