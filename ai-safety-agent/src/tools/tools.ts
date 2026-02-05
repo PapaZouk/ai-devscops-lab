@@ -67,5 +67,22 @@ export const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                 required: ['moduleName']
             }
         }
+    },
+    {
+        type: "function",
+        function: {
+            name: 'run_command',
+            description: 'Execute a shell command in the project root. Use this to install missing dependencies identified during validation.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    command: {
+                        type: 'string',
+                        description: 'The full command to run (e.g., "npm install bcrypt")'
+                    }
+                },
+                required: ['command']
+            }
+        }
     }
 ];

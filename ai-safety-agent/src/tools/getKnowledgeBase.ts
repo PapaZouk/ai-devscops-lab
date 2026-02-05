@@ -1,22 +1,44 @@
 import path from "path";
 import fs from "fs/promises";
 import * as fsSync from "fs";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export async function getKnowledgeBase(query: string): Promise<string> {
-    const kbPath = path.resolve(__dirname, '../agent_knowledge/remediation_examples.json');
-    const library: Record<string, any> = {
-        jwt: { title: "JWT Security", code: "import jwt from 'jsonwebtoken';\nconst token = jwt.sign({ id: 1 }, process.env.JWT_SECRET, { algorithm: 'HS256' });" },
-        zod: { title: "Zod Validation", code: "import { z } from 'zod';\nconst schema = z.object({ email: z.string().email() });" },
-        env: { title: "Env Vars", code: "const secret = process.env.JWT_SECRET; // Never hardcode defaults" }
-    };
+    const kbPath = path.resolve(__dirname, '../../agent_knowledge/remediation_examples.json');
 
     if (!fsSync.existsSync(kbPath)) {
-        const key = Object.keys(library).find(k => query.toLowerCase().includes(k));
-        return key ? `[REFERENCE] ${library[key].code}` : "Use process.env and standard ESM imports.";
+        return `ERROR: Knowledge base file not found at: ${kbPath}`;
     }
 
-    const data = JSON.parse(await fs.readFile(kbPath, 'utf8'));
-    const normalizedQuery = query.toLowerCase();
-    const key = Object.keys(data).find(k => normalizedQuery.includes(k) || k.includes(normalizedQuery));
-    return key ? `[REFERENCE: ${data[key].title}]\n${data[key].description}\n\nCODE:\n${data[key].code}` : "No specific match. Use standard ESM.";
+    try {
+        const fileContent = await fs.readFile(kbPath, 'utf8');
+        const data = JSON.parse(fileContent);
+        const normalizedQuery = (query || "").toLowerCase().trim();
+
+        let key = Object.keys(data).find(k =>
+            normalizedQuery.includes(k.toLowerCase()) ||
+            k.toLowerCase().includes(normalizedQuery)
+        );
+
+        if (!key) {
+            key = Object.keys(data).find(k =>
+                data[k].title.toLowerCase().includes(normalizedQuery) ||
+                data[k].description.toLowerCase().includes(normalizedQuery)
+            );
+        }
+
+        if (key) {
+            const entry = data[key];
+            return `[KNOWLEDGE FOUND: ${entry.title}]\nKey: ${key}\nDescription: ${entry.description}\n\nRecommended Implementation:\n${entry.code}`;
+        }
+
+        // 3. CRITICAL: If still no match, show the agent what IS available
+        const availableTopics = Object.keys(data).join(", ");
+        return `No specific match found for "${query}". \n\nAVAILABLE KNOWLEDGE KEYS: ${availableTopics}. \n\nPlease query one of these specific keys for implementation details.`;
+    } catch (err: any) {
+        return `ERROR: Failed to parse knowledge base: ${err.message}`;
+    }
 }
