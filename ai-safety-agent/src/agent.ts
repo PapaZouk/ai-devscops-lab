@@ -74,9 +74,10 @@ Your goal is to remediate vulnerabilities defined in the provided CONTRACT while
 ### MANDATORY COORDINATION WORKFLOW:
 1. DISCOVERY: Map the module dependencies using 'api_directory_helper' and read relevant source/test files.
 2. SOURCE FIX: Call 'propose_fix' for the logic changes.
-3. TEST SYNCHRONIZATION: Once the source fix is APPROVED, call 'generate_tests'. Pass your approved code to the Testing Agent to create a matching validation suite.
-4. TEST PROPOSAL: Call 'propose_fix' for the test file using the code provided by the Testing Agent.
-5. ATOMIC EXECUTION: Call 'write_fix' only after BOTH the source logic and the test logic have been APPROVED.
+3. COMMIT LOGIC: Once the source fix is APPROVED, you MUST call 'write_fix' for that file immediately.
+4. TEST SYNCHRONIZATION: Once the source fix is APPROVED and only after the source file is written to disk, call 'generate_tests'.
+5. TEST PROPOSAL: Call 'propose_fix' for the test file using the code provided by the Testing Agent.
+6. ATOMIC EXECUTION: Call 'write_fix' only after BOTH the source logic and the test logic have been APPROVED.
 
 ### CORE OPERATING RULES:
 1. NO HARDCODED LOGIC: Do not store specific implementation details in your prompt memory; rely on tool outputs.
@@ -132,6 +133,8 @@ Contract: ${JSON.stringify(contract, null, 2)}`
       }
 
       for (const toolCall of message.tool_calls) {
+        if (toolCall.type !== 'function') continue;
+
         const { name, arguments: argsString } = toolCall.function;
         const args = JSON.parse(argsString);
 
@@ -149,8 +152,24 @@ Contract: ${JSON.stringify(contract, null, 2)}`
 
           // Persistent update of the error state for the next LLM turn
           latestError = updatedError;
-
           messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
+
+          const hasApprovedFix = messages.some(m =>
+            m.role === 'tool' &&
+            typeof m.content === 'string' &&
+            m.content.startsWith('APPROVED')
+          );
+
+          const isTryingToRead = message.tool_calls.some(tc =>
+            tc.type === 'function' && tc.function.name === 'read_file'
+          );
+
+          if (hasApprovedFix && isTryingToRead) {
+            messages.push({
+              role: 'user',
+              content: `SYSTEM NUDGE: I see you have an APPROVED fix for a file, but you are trying to 'read_file' again. The file on disk has NOT changed yet. You must call 'write_fix' for the approved path immediately to progress.`
+            });
+          }
 
           if (result.includes("FILE_NOT_FOUND")) {
             messages.push({
