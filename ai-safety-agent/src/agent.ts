@@ -5,6 +5,7 @@ import path from 'path';
 import { execSync } from 'child_process';
 import chalk from 'chalk';
 import { fileURLToPath } from 'url';
+import { runDiscovery } from './discoveryAgent.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const agentRoot = path.resolve(__dirname, '..');
@@ -16,7 +17,7 @@ const client = new OpenAI({
 
 // --- HELPERS ---
 
-async function ensureDir(dirPath: string) {
+export async function ensureDir(dirPath: string) {
   if (!fsSync.existsSync(dirPath)) await fs.mkdir(dirPath, { recursive: true });
 }
 
@@ -61,18 +62,22 @@ async function runReviewerAgent(
     messages: [
       {
         role: 'system',
-        content: `You are a Senior DevSecOps Auditor. 
-        Evaluate the PROPOSED code against the ORIGINAL.
-        
-        CRITERIA FOR REJECTION:
-        1. Any hardcoded secrets or fallback strings (e.g., || 'secret').
-        2. Missing original functions or logic (Snippet checking).
-        3. Incorrect ESM syntax (must use 'import', not 'require').
-        4. Missing error handling for environment variables.
+        content: `You are a Senior DevSecOps Auditor. Your goal is to ensure security improvements do not break system functionality.
 
-        Format your response as:
-        RESULT: [APPROVED/REJECTED]
-        REASON: [Detailed technical explanation]`
+            CRITERIA FOR APPROVAL (Must pass all):
+            1. SECURITY DELTA: The PROPOSED code must be objectively more secure than the ORIGINAL (e.g., replacing hardcoded strings with environment variables is a SUCCESS).
+            2. FUNCTIONAL PARITY: All public exports, functions, and core business logic from the ORIGINAL must exist in the PROPOSED code. Do not accept partial snippets.
+            3. MODULE STANDARDS: Must use ESM 'import/export'. No 'require'.
+            4. STABILITY: Environment variables must be checked for existence before use (e.g., throwing a clear error if a variable is missing).
+
+            CRITERIA FOR REJECTION:
+            - If the agent "hallucinates" new dependencies not found in the original imports.
+            - If the agent simplifies the logic so much that it loses original features.
+            - If the agent introduces hardcoded fallback values (e.g., const secret = process.env.KEY || 'default').
+
+            Format your response as:
+            RESULT: [APPROVED/REJECTED]
+            REASON: [Technical explanation of the delta]`
       },
       {
         role: 'user',
@@ -84,7 +89,6 @@ async function runReviewerAgent(
   const content = response.choices[0].message.content || "";
   const isApproved = content.includes("RESULT: APPROVED");
 
-  // Log the auditor's full thought process to the console for you
   console.log(chalk.magentaBright(`     Auditor Feedback: ${content.split('\n')[1] || content}`));
 
   return {
@@ -101,6 +105,17 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
   const scratchPath = path.resolve(memoryDir, 'scratchpad.md');
 
   let latestError = errorLog;
+
+  console.log(chalk.yellow.bold(`\n🚀 System Startup: Initializing Context & Discovery`));
+
+  // --- NEW: RUN DISCOVERY AGENT FIRST ---
+  try {
+    console.log(chalk.blue(`  🔍 Step 0: Discovery Agent - Scanning project structure...`));
+    await runDiscovery(apiRoot); // We will define this helper below
+    console.log(chalk.green(`  ✅ Step 0: Discovery Complete. API Map generated.`));
+  } catch (err: any) {
+    console.log(chalk.red(`  ⚠️  Discovery Warning: ${err.message}. Proceeding with manual exploration.`));
+  }
 
   console.log(chalk.yellow.bold(`\n🚀 System Startup: Initializing Context & Backups`));
 
@@ -124,9 +139,10 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
   - DO NOT modify jest.config.js, package.json, or test files.
   - 'write_fix' is a DESTRUCTIVE overwrite. You MUST provide the FULL file content.
   - You MUST preserve original imports like 'import { db } from "../repository/db.js"'.
+  - IMPORT STRUCTURE: 'jsonwebtoken' usually requires 'import jwt from "jsonwebtoken"' followed by 'jwt.sign()'. Avoid calling 'sign()' directly unless explicitly imported.
   - Use 'process.env.JWT_SECRET' without hardcoded fallbacks.
   - If tests fail, it is likely because you deleted essential logic or used wrong import syntax.
-  - STRICT IMPORTS: Only use packages you see in the original file or package.json Do not guess package names.`
+  - STRICT IMPORTS: Only use packages you see in the original file or package.json. Do not guess package names.`
   };
 
   let messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
@@ -154,7 +170,21 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
         }
       }
     },
-    { type: 'function', function: { name: 'propose_fix', description: 'Request audit.', parameters: { type: 'object', properties: { path: { type: 'string' }, code: { type: 'string' } }, required: ['path', 'code'] } } }
+    { type: 'function', function: { name: 'propose_fix', description: 'Request audit.', parameters: { type: 'object', properties: { path: { type: 'string' }, code: { type: 'string' } }, required: ['path', 'code'] } } },
+    {
+      type: 'function',
+      function: {
+        name: 'api_directory_helper',
+        description: 'Lookup the verified project map to find services, repositories, and test files.',
+        parameters: {
+          type: 'object',
+          properties: {
+            moduleName: { type: 'string', description: 'e.g., "auth", "products"' }
+          },
+          required: ['moduleName']
+        }
+      }
+    }
   ];
 
   try {
@@ -189,7 +219,6 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
         const { name, arguments: argsString } = toolCall.function;
         let args = JSON.parse(argsString);
 
-        // --- ADDED VERBOSE LOGGING ---
         console.log(chalk.cyan.bold(`\n  🛠️  TOOL: ${name}`));
         console.log(chalk.blackBright(`     Args: ${JSON.stringify(args)}`));
 
@@ -204,6 +233,15 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
             const fullPath = path.resolve(apiRoot, args.path || ".");
             const files = await fs.readdir(fullPath, { recursive: true });
             result = files.slice(0, 100).join('\n');
+          } else if (name === 'api_directory_helper') {
+            const mapPath = path.resolve(agentRoot, 'agent_knowledge/api_map.json');
+            if (!fsSync.existsSync(mapPath)) {
+              result = "ERROR: API Map not found. Use 'list_files' to explore manually.";
+            } else {
+              const mapData = JSON.parse(await fs.readFile(mapPath, 'utf8'));
+              const info = mapData[args.moduleName] || mapData['auth'];
+              result = `VERIFIED PATHS for ${args.moduleName}:\n${JSON.stringify(info, null, 2)}`;
+            }
           } else {
             const rawPath = args.path || "";
             if (!rawPath) throw new Error("Agent failed to provide a path.");
@@ -211,23 +249,19 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
             const isInternal = rawPath.startsWith('.agent_memory');
             const fullPath = isInternal ? path.resolve(agentRoot, rawPath) : path.resolve(apiRoot, rawPath);
 
-            // --- LOGGING RESOLVED PATH ---
             console.log(chalk.blue(`     Path Resolved: ${fullPath}`));
 
             if (name === 'read_file') {
               result = await fs.readFile(fullPath, 'utf-8');
               console.log(chalk.green(`     ✅ Read Successful.`));
             } else if (name === 'write_fix') {
-              // --- 🛡️ SNIPPET GUARD ---
-              // If the new code is missing 'import' or is suspiciously short, reject it immediately
               const hasImports = args.code.includes('import');
               const isTooShort = args.code.length < (initialCode.length * 0.5);
 
               if (!hasImports || isTooShort) {
                 console.log(chalk.red(`     ⚠️  Guard Triggered: Agent tried to write a partial snippet.`));
-                result = `REJECTED: You provided a partial snippet. You MUST provide the FULL file content, including all original imports (like 'db') and all existing functions. Your last attempt was only ${args.code.length} characters compared to the original ${initialCode.length}.`;
+                result = `REJECTED: You provided a partial snippet. You MUST provide the FULL file content, including all original imports and functions. Length: ${args.code.length} vs Original: ${initialCode.length}`;
               } else {
-                // --- PROCEED WITH WRITING ---
                 await fs.writeFile(fullPath, args.code, 'utf8');
                 console.log(chalk.yellow(`     💾 File saved. Running tests...`));
 
@@ -241,11 +275,8 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
                   console.log(chalk.red(`     ❌ Validation Failed.`));
 
                   result = `VALIDATION_FAILED. 
-                    The tests failed after your changes. 
-                    Check if you used variables or functions that aren't defined (e.g. using 'sign' instead of 'jsonwebtoken.sign'). 
-                    Check if your import paths are correct.
-                    
-                    ERROR TRACE:
+                  The tests failed. Check for missing variables (e.g. 'sign' vs 'jwt.sign') or bad imports.
+                  TRACE:
                   ${out.slice(0, 500)}`;
                 }
               }
@@ -253,6 +284,7 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
               const original = await fs.readFile(backupPath, 'utf-8');
               const review = await runReviewerAgent(args.path, args.code, original, latestError);
               result = review.approved ? "APPROVED" : `REJECTED: ${review.feedback}`;
+              await updateScratchpad(`AUDITOR REVIEW: ${review.approved ? 'APPROVED' : 'REJECTED'}\nFEEDBACK: ${review.feedback}`);
               console.log(review.approved ? chalk.green(`     ✅ Approved`) : chalk.red(`     ❌ Rejected`));
             }
           }
@@ -266,7 +298,7 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
     }
     return "Failed.";
   } finally {
-    // Session kept for post-mortem
+    // Keep memory for analysis
   }
 }
 
@@ -275,6 +307,6 @@ export async function rollbackToSafety(apiRoot: string) {
   try {
     if (fsSync.existsSync(memoryDir)) await fs.rm(memoryDir, { recursive: true, force: true });
     execSync('git reset --hard HEAD', { cwd: apiRoot, stdio: 'ignore' });
-    execSync('git clean -fd', { cwd: apiRoot, stdio: 'ignore' }); // Added to remove untracked files
+    execSync('git clean -fd', { cwd: apiRoot, stdio: 'ignore' });
   } catch (err) { }
 }
