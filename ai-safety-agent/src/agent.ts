@@ -6,6 +6,7 @@ import { execSync } from 'child_process';
 import chalk from 'chalk';
 import { fileURLToPath } from 'url';
 import { runDiscovery } from './discoveryAgent.js';
+import { runReviewerAgent } from './reviewerAgent.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const agentRoot = path.resolve(__dirname, '..');
@@ -26,7 +27,15 @@ async function updateScratchpad(content: string) {
   await ensureDir(memoryDir);
   const scratchPath = path.resolve(memoryDir, 'scratchpad.md');
   const timestamp = new Date().toLocaleTimeString();
-  const entry = `\n### [${timestamp}] LOG ENTRY\n${content}\n---\n`;
+
+  let displayContent = content;
+  if (content.includes("REJECTED") || content.includes("VALIDATION_FAILED") || content.includes("ERROR")) {
+    displayContent = content.slice(0, 1500); // Give ample room for stack traces
+  } else if (content.length > 500) {
+    displayContent = content.slice(0, 500) + "... [TRUNCATED]";
+  }
+
+  const entry = `\n### [${timestamp}] LOG ENTRY\n${displayContent}\n---\n`;
   await fs.appendFile(scratchPath, entry, 'utf8');
 }
 
@@ -49,53 +58,7 @@ async function getKnowledgeBase(query: string): Promise<string> {
   return key ? `[REFERENCE: ${data[key].title}]\n${data[key].description}\n\nCODE:\n${data[key].code}` : "No specific match. Use standard ESM.";
 }
 
-async function runReviewerAgent(
-  filePath: string,
-  proposedCode: string,
-  originalCode: string,
-  evidence: string
-): Promise<{ approved: boolean; feedback?: string }> {
-  console.log(chalk.magenta(`  🔍 Auditor: Analyzing proposed changes for ${filePath}...`));
 
-  const response = await client.chat.completions.create({
-    model: 'google/gemma-3-4b',
-    messages: [
-      {
-        role: 'system',
-        content: `You are a Senior DevSecOps Auditor. Your goal is to ensure security improvements do not break system functionality.
-
-            CRITERIA FOR APPROVAL (Must pass all):
-            1. SECURITY DELTA: The PROPOSED code must be objectively more secure than the ORIGINAL (e.g., replacing hardcoded strings with environment variables is a SUCCESS).
-            2. FUNCTIONAL PARITY: All public exports, functions, and core business logic from the ORIGINAL must exist in the PROPOSED code. Do not accept partial snippets.
-            3. MODULE STANDARDS: Must use ESM 'import/export'. No 'require'.
-            4. STABILITY: Environment variables must be checked for existence before use (e.g., throwing a clear error if a variable is missing).
-
-            CRITERIA FOR REJECTION:
-            - If the agent "hallucinates" new dependencies not found in the original imports.
-            - If the agent simplifies the logic so much that it loses original features.
-            - If the agent introduces hardcoded fallback values (e.g., const secret = process.env.KEY || 'default').
-
-            Format your response as:
-            RESULT: [APPROVED/REJECTED]
-            REASON: [Technical explanation of the delta]`
-      },
-      {
-        role: 'user',
-        content: `EVIDENCE (Test Failures):\n${evidence}\n\nORIGINAL CODE:\n${originalCode}\n\nPROPOSED CODE:\n${proposedCode}`
-      }
-    ]
-  });
-
-  const content = response.choices[0].message.content || "";
-  const isApproved = content.includes("RESULT: APPROVED");
-
-  console.log(chalk.magentaBright(`     Auditor Feedback: ${content.split('\n')[1] || content}`));
-
-  return {
-    approved: isApproved,
-    feedback: content
-  };
-}
 
 // --- MAIN REMEDIATOR ---
 
@@ -135,19 +98,39 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
 
   const systemPrompt: OpenAI.Chat.Completions.ChatCompletionMessageParam = {
     role: 'system',
-    content: `You are a DevSecOps Agent. Your ONLY task is to fix security in '${targetFile}'.
-  - DO NOT modify jest.config.js, package.json, or test files.
-  - 'write_fix' is a DESTRUCTIVE overwrite. You MUST provide the FULL file content.
-  - You MUST preserve original imports like 'import { db } from "../repository/db.js"'.
-  - IMPORT STRUCTURE: 'jsonwebtoken' usually requires 'import jwt from "jsonwebtoken"' followed by 'jwt.sign()'. Avoid calling 'sign()' directly unless explicitly imported.
-  - Use 'process.env.JWT_SECRET' without hardcoded fallbacks.
-  - If tests fail, it is likely because you deleted essential logic or used wrong import syntax.
-  - STRICT IMPORTS: Only use packages you see in the original file or package.json. Do not guess package names.`
+    content: `You are a Senior DevSecOps Remediation Agent. Your ONLY task is to fix security in '${targetFile}'.
+
+        ### CORE OPERATING PROCEDURE (MANDATORY):
+        1. DISCOVERY: Your first action MUST be to call 'api_directory_helper' for the module relevant to the target file.
+        2. SOURCE OF TRUTH: Use the paths returned by the helper for all imports and test references. Do not guess paths or use 'list_files' if the map has the answer.
+        3. ESM COMPLIANCE: In this project, imports MUST include the '.js' extension (e.g., use '../db.js', not '../db').
+
+        ### TECHNICAL CONSTRAINTS:
+        - FULL FILE WRITES: 'write_fix' is a DESTRUCTIVE overwrite. You MUST provide the FULL file content. Never send snippets.
+        - LOGIC PRESERVATION: You MUST preserve all original logic, functions, and imports (like 'db') unless they are the direct cause of the security vulnerability.
+        - NO UNAUTHORIZED MODS: DO NOT modify 'jest.config.js', 'package.json', or any files in the 'tests/' directory.
+        - STRICT IMPORTS: Only use packages found in the original file or 'package.json'. Do not guess package names.
+        - JWT STANDARDS: 'jsonwebtoken' usually requires 'import jwt from "jsonwebtoken"' followed by 'jwt.sign()'. Avoid calling 'sign()' directly unless explicitly imported.
+
+        ### SECURITY REQUIREMENTS:
+        - SECRETS: Use 'process.env' for all secrets. Do NOT include hardcoded fallbacks (e.g., || 'secret').
+        - VALIDATION: If tests fail, analyze the error trace. Failure is usually due to deleted logic or incorrect ESM import syntax.
+        
+        Your goal is a verified, passing test suite with zero hardcoded secrets.`
   };
 
   let messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     systemPrompt,
-    { role: 'user', content: `Fix security in ${targetFile}. Error: ${errorLog}` }
+    {
+      role: 'user',
+      content: `TASK: Fix security in ${targetFile}.
+    
+        MANDATORY STARTING STEP:
+        1. Call 'api_directory_helper' for the module associated with this file.
+        2. Read the files identified by the helper to understand the relationship between service, repository, and tests.
+        
+        INITIAL ERROR: ${errorLog}`
+    }
   ];
 
   const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
@@ -236,11 +219,15 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
           } else if (name === 'api_directory_helper') {
             const mapPath = path.resolve(agentRoot, 'agent_knowledge/api_map.json');
             if (!fsSync.existsSync(mapPath)) {
-              result = "ERROR: API Map not found. Use 'list_files' to explore manually.";
+              result = "ERROR: API Map not found.";
             } else {
               const mapData = JSON.parse(await fs.readFile(mapPath, 'utf8'));
-              const info = mapData[args.moduleName] || mapData['auth'];
-              result = `VERIFIED PATHS for ${args.moduleName}:\n${JSON.stringify(info, null, 2)}`;
+
+              const target = args.moduleName?.toLowerCase();
+              const moduleKey = Object.keys(mapData).find(k => k.toLowerCase().includes(target || ""));
+              const info = moduleKey ? mapData[moduleKey] : "Module not found in map.";
+
+              result = `PROJECT MAP DATA for ${args.moduleName || 'requested module'}:\n${JSON.stringify(info, null, 2)}`;
             }
           } else {
             const rawPath = args.path || "";
