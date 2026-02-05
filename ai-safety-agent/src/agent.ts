@@ -11,6 +11,7 @@ import { ensureDir } from './helpers/ensureDir.js';
 import { updateScratchpad } from './helpers/updateScratchpad.js';
 import { rollbackToSafety } from './helpers/rollbackToSafety.js';
 import { handleToolCall } from './handlers/toolHandler.js';
+import { estimateTokenCount } from './utils/estimateTokenCount.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const agentRoot = path.resolve(__dirname, '..');
@@ -44,7 +45,6 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
 
   console.log(chalk.green(`  ✅ Step 1: Definition Complete. Contract established.`));
 
-  // Terminal UI for Contract display
   const display = (label: string, items: any, color: Function) => {
     console.log(color(`\n─── ${label} ───`));
     if (Array.isArray(items)) {
@@ -65,45 +65,34 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
   const initialLog = `# Remediation Log: ${targetFile}\n\n## Initial Error\n\`\`\`\n${errorLog}\n\`\`\`\n---\n`;
   await fs.writeFile(scratchPath, initialLog, 'utf8');
 
-  // Updated System Prompt: Focuses on Multi-Agent Orchestration and Tool Protocol
   const systemPrompt: OpenAI.Chat.Completions.ChatCompletionMessageParam = {
     role: 'system',
     content: `You are a Senior Security Orchestrator. 
 Your goal is to remediate vulnerabilities defined in the provided CONTRACT while maintaining functional integrity.
 
-### MANDATORY COORDINATION WORKFLOW:
-1. DISCOVERY: Map the module dependencies and read relevant files.
-2. SOURCE FIX: Call 'propose_fix' for the logic changes.
-3. COMMIT SOURCE: Once the source fix is APPROVED, you MUST call 'write_fix' for that file immediately. Do not wait for tests.
-4. TEST GENERATION: Only after the source file is written, call 'generate_tests'.
-5. TEST FIX: Call 'propose_fix' for the test file.
-6. COMMIT TEST: Once the test fix is APPROVED, call 'write_fix' for the test file. This will trigger the final validation.
+### TOOL SELECTION HEURISTICS:
+- **Project Context:** Use 'api_directory_helper' followed by 'read_file' if you lack path/dependency clarity.
+- **Environment Errors:** If 'write_fix' fails with Syntax/Import/Module errors, you MUST use 'get_knowledge'.
+- **Testing Requirements:** Once code is written, you MUST use 'generate_tests' to synchronize the environment.
+- **Protocol:** Use 'propose_fix' for logic. Only use 'write_fix' after receiving an 'APPROVED' status.
 
-### CRITICAL EXECUTION RULE:
-- BATCH EXECUTION: Once you have 'APPROVED' status for BOTH the source file and the test file, you must call 'write_fix' for BOTH files in the same turn (sequentially).
-- Do not call 'write_fix' for one without the other. This ensures 'npm test' always runs against a synchronized codebase.
-- If the Auditor rejects one file but approves the other, your priority is to fix the REJECTED file immediately so you can reach the Batch Execution state.
+### THE "RESEARCH-FIRST" TRIGGER:
+- If 'write_fix' returns VALIDATION_FAILED due to environment/module issues, your NEXT tool call MUST be 'get_knowledge'.
+- If 'propose_fix' is REJECTED twice, you MUST research standard patterns via 'get_knowledge' before re-proposing.
+
+### MANDATORY COORDINATION WORKFLOW:
+1. DISCOVERY: Map dependencies and read relevant source/test files.
+2. SOURCE FIX: Call 'propose_fix' for logic changes.
+3. COMMIT SOURCE: Once APPROVED, you MUST call 'write_fix' immediately.
+4. TEST ALIGNMENT: After 'write_fix' (even if it fails), call 'generate_tests' to synchronize.
+5. TEST PROPOSAL: Call 'propose_fix' for the test file.
+6. FINAL VALIDATION: Call 'write_fix' for the test file.
 
 ### CORE OPERATING RULES:
-1. NO HARDCODED LOGIC: Do not store specific implementation details in your prompt memory; rely on tool outputs.
-2. MIGRATION TOLERANCE: Do not be discouraged by partial test failures. If 'write_fix' fails validation, analyze the 'latestError' (e.g., missing environment variables or mismatched hashes) and patch the remaining files.
-3. MODULE STANDARDS: Strictly use ESM syntax (import/export) and include '.js' extensions in all local paths.
-4. INTERFACE PARITY: Preserve original function signatures and exports unless the contract demands a breaking change.
-5. RECOVERY: If stuck in a loop, use 'get_knowledge' to retrieve remediation patterns.
-
-### HANDLING VALIDATION FAILURES:
-If 'write_fix' returns VALIDATION_FAILED, perform these steps:
-1. READ: Examine the "TEST OUTPUT" in the tool result.
-2. DIAGNOSE:
-   - Is it a Syntax/ESM error? Fix the file mentioned.
-   - Is it a 'Module not found' error? Check if the missing file is a dependency you intentionally introduced in your code, or if the Testing Agent hallucinated a file path in the test suite. Ensure the implementation and the tests are using the same directory structure.
-   - Is it a Test failure? Use 'generate_tests' again, providing the latest error so the Testing Agent can fix its logic.
-3. RECTIFY: Propose and write the missing or corrected files.
-
-### CRITICAL EXECUTION RULE:
-- Every file you 'propose_fix' for MUST eventually be applied via 'write_fix' once approved.
-- If you have an approved fix for a SOURCE file and an approved fix for a TEST file, you must call 'write_fix' for BOTH files sequentially.
-- Validation (npm test) only works if the code on disk matches your proposals. If you only write the source code but leave the old tests on disk, validation WILL fail.
+1. NO HARDCODED LOGIC: Rely on tool outputs, 'get_knowledge', and the CONTRACT.
+2. RESEARCH-FIRST: Use 'get_knowledge' to resolve technical roadblocks before guessing syntax.
+3. STRATEGY LOCK: Maintain approved security levels (e.g. Asymmetric vs Symmetric) even when fixing syntax.
+4. MODULE STANDARDS: Strictly use ESM with '.js' extensions. No TypeScript annotations.
 
 Current Target: ${targetFile}
 Contract: ${JSON.stringify(contract, null, 2)}`
@@ -126,6 +115,17 @@ Contract: ${JSON.stringify(contract, null, 2)}`
       });
 
       const message = response.choices[0].message;
+
+      const contextLimit = 131072;
+      const estimatedTokens = estimateTokenCount(messages);
+      const remainingPercent = Math.max(0, 100 - (estimatedTokens / contextLimit * 100));
+
+      console.log(chalk.magenta(`  📊 Context Monitor: ~${Math.round(estimatedTokens)} tokens used (${remainingPercent.toFixed(1)}% remaining)`));
+
+      if (remainingPercent < 20) {
+        console.log(chalk.red.bold(`  ⚠️ WARNING: Context window nearly full! Consider summarizing scratchpad.`));
+      }
+
       messages.push(message);
 
       if (message.content) {
@@ -133,9 +133,7 @@ Contract: ${JSON.stringify(contract, null, 2)}`
         await updateScratchpad(`THOUGHT: ${message.content.trim()}`);
       }
 
-      if (!message.tool_calls || message.tool_calls.length === 0) {
-        continue;
-      }
+      if (!message.tool_calls || message.tool_calls.length === 0) continue;
 
       for (const toolCall of message.tool_calls) {
         if (toolCall.type !== 'function') continue;
@@ -150,48 +148,56 @@ Contract: ${JSON.stringify(contract, null, 2)}`
             apiRoot,
             agentRoot,
             initialCode,
-            latestError, // Pass the persisting error context
+            latestError,
             contract,
             messages
           });
 
-          // Persistent update of the error state for the next LLM turn
           latestError = updatedError;
           messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
 
-          const hasApprovedFix = messages.some(m =>
-            m.role === 'tool' &&
-            typeof m.content === 'string' &&
-            m.content.startsWith('APPROVED')
-          );
+          // 1. GENERIC DEPENDENCY & EXPORT ALIGNMENT
+          const isValidationError = result.includes("VALIDATION_FAILED");
+          const isDependencyIssue = isValidationError &&
+            (result.toLowerCase().includes("module") || result.toLowerCase().includes("export"));
 
-          const isTryingToRead = message.tool_calls.some(tc =>
-            tc.type === 'function' && tc.function.name === 'read_file'
-          );
-
-          if (hasApprovedFix && isTryingToRead) {
+          if (isDependencyIssue) {
             messages.push({
               role: 'user',
-              content: `SYSTEM NUDGE: I see you have an APPROVED fix for a file, but you are trying to 'read_file' again. The file on disk has NOT changed yet. You must call 'write_fix' for the approved path immediately to progress.`
-            });
+              content: `ENVIRONMENT MISMATCH DETECTED: 
+              - Your implementation uses a module or export pattern not supported by the current environment.
+              - You MUST call 'get_knowledge' to research correct patterns.
+              - You MUST verify 'package.json' via 'read_file' to confirm installed dependencies.
+              - Stop guessing; align your imports with the actual environment now.`
+            } as OpenAI.Chat.Completions.ChatCompletionUserMessageParam);
           }
 
-          if (result.includes("FILE_NOT_FOUND")) {
+          // 2. REJECTION LOOP DETECTION
+          const recentRejections = messages.slice(-8).filter(m => {
+            if (m.role === 'tool' && typeof m.content === 'string') {
+              return m.content.includes("REJECTED") || m.content.includes("VALIDATION_FAILED");
+            }
+            return false;
+          }).length;
+
+          if (recentRejections >= 2 && !isDependencyIssue) {
             messages.push({
               role: 'user',
-              content: `ADVISORY: The file '${args.path}' does not exist. Cross-reference the PROJECT MAP via 'api_directory_helper' to find the correct existing path. Do not attempt to import this non-existent path.`
-            });
+              content: `SYSTEM ADVISORY: You are stuck in a loop. Use 'get_knowledge' and 'api_directory_helper' to reconcile your implementation with the environment.`
+            } as OpenAI.Chat.Completions.ChatCompletionUserMessageParam);
           }
 
-          // If validation failed, nudge the agent with the specific error and its next task
-          if (result.includes("VALIDATION_FAILED")) {
+          // 3. STUCK ON READ DETECTION
+          const recentAssistantMsgs = messages.slice(-6).filter(m => m.role === 'assistant');
+          const readCount = recentAssistantMsgs.filter(m =>
+            m.tool_calls?.some(tc => tc.function.name === 'read_file')
+          ).length;
+
+          if (readCount >= 3) {
             messages.push({
               role: 'user',
-              content: `SYSTEM: Validation failed. 
-        IMPORTANT: I noticed the tests are still failing with syntax or environment errors. 
-        Did you forget to call 'write_fix' for the TEST file? 
-        You must write the APPROVED test code to disk so that 'npm test' can see it.`
-            });
+              content: `STUCK DETECTED: Multiple 'read_file' calls without progress. You MUST 'propose_fix' or use 'get_knowledge' now.`
+            } as OpenAI.Chat.Completions.ChatCompletionUserMessageParam);
           }
 
           if (status === 'COMPLETE') {
