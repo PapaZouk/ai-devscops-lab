@@ -20,33 +20,40 @@ export async function runDiscovery(apiRoot: string) {
     const mapPath = path.resolve(knowledgeDir, 'api_map.json');
     await ensureDir(knowledgeDir);
 
-    // 1. Expand search to include 'tests' and 'src'
-    // This finds files in both src and tests directories
-    const fileTree = execSync('find src tests -maxdepth 3 -not -path "*/.*" -type f', { cwd: apiRoot }).toString();
+    // DYNAMIC: Find all directories and files, excluding hidden folders and node_modules
+    // We limit depth to 4 to keep the context window clean but catch most structures
+    const fileTree = execSync(
+        'find . -maxdepth 4 -not -path "*/.*" -not -path "./node_modules*" -type f',
+        { cwd: apiRoot }
+    ).toString();
 
-    // 2. Updated Prompt for better association
     const response = await client.chat.completions.create({
         model: 'google/gemma-3-4b',
         messages: [
             {
                 role: 'system',
-                content: `You are a Project Architect. Group related files into logical modules based on their functionality (e.g., "auth", "products").
+                content: `You are a Project Architect. Your task is to analyze a file list and identify the project's "Functional Modules". 
+                
+                OBJECTIVE:
+                Group related files (logic, data access, and tests) into logical modules. 
                 
                 RULES:
-                1. Look for matching names across directories (e.g., 'src/services/authService.ts' and 'tests/auth.test.ts' belong to "auth").
-                2. If a module has no repository, leave it blank, but ALWAYS look for tests.
-                3. Return ONLY raw JSON. No markdown blocks.
+                1. Do not assume directory names like 'src' or 'tests'. Identify relationships by filename (e.g., 'authService', 'authRepo', 'auth.spec').
+                2. Identify the core "Entry Point" or "Service" for the module.
+                3. Identify the "Data Source" or "Repository" if applicable.
+                4. Identify the "Test" file associated with the logic.
+                5. Return ONLY a raw JSON object.
 
-                Format: 
+                REQUIRED JSON STRUCTURE:
                 { 
                   "moduleName": { 
-                    "service": "path/to/service", 
-                    "repository": "path/to/db", 
-                    "tests": "path/to/test" 
+                    "logic": "relative/path/to/main/logic", 
+                    "data": "relative/path/to/db/or/repo", 
+                    "tests": "relative/path/to/test" 
                   } 
                 }`
             },
-            { role: 'user', content: `Map these files into functional modules: \n${fileTree}` }
+            { role: 'user', content: `Analyze this project structure and map the modules: \n${fileTree}` }
         ],
     });
 
