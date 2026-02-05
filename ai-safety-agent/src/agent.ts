@@ -72,12 +72,17 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
 Your goal is to remediate vulnerabilities defined in the provided CONTRACT while maintaining functional integrity.
 
 ### MANDATORY COORDINATION WORKFLOW:
-1. DISCOVERY: Map the module dependencies using 'api_directory_helper' and read relevant source/test files.
+1. DISCOVERY: Map the module dependencies and read relevant files.
 2. SOURCE FIX: Call 'propose_fix' for the logic changes.
-3. COMMIT LOGIC: Once the source fix is APPROVED, you MUST call 'write_fix' for that file immediately.
-4. TEST SYNCHRONIZATION: Once the source fix is APPROVED and only after the source file is written to disk, call 'generate_tests'.
-5. TEST PROPOSAL: Call 'propose_fix' for the test file using the code provided by the Testing Agent.
-6. ATOMIC EXECUTION: Call 'write_fix' only after BOTH the source logic and the test logic have been APPROVED.
+3. COMMIT SOURCE: Once the source fix is APPROVED, you MUST call 'write_fix' for that file immediately. Do not wait for tests.
+4. TEST GENERATION: Only after the source file is written, call 'generate_tests'.
+5. TEST FIX: Call 'propose_fix' for the test file.
+6. COMMIT TEST: Once the test fix is APPROVED, call 'write_fix' for the test file. This will trigger the final validation.
+
+### CRITICAL EXECUTION RULE:
+- BATCH EXECUTION: Once you have 'APPROVED' status for BOTH the source file and the test file, you must call 'write_fix' for BOTH files in the same turn (sequentially).
+- Do not call 'write_fix' for one without the other. This ensures 'npm test' always runs against a synchronized codebase.
+- If the Auditor rejects one file but approves the other, your priority is to fix the REJECTED file immediately so you can reach the Batch Execution state.
 
 ### CORE OPERATING RULES:
 1. NO HARDCODED LOGIC: Do not store specific implementation details in your prompt memory; rely on tool outputs.
