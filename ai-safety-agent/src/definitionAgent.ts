@@ -38,17 +38,22 @@ export async function runDefinition(filePath: string, code: string, errorLog: st
     const rawContent = response.choices[0].message.content || '{}';
 
     try {
-        const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
-        let jsonString = jsonMatch ? jsonMatch[0] : rawContent;
+        const firstBrace = rawContent.indexOf('{');
+        const lastBrace = rawContent.lastIndexOf('}');
 
+        if (firstBrace === -1 || lastBrace === -1) throw new Error("No JSON object found");
+
+        let jsonString = rawContent.substring(firstBrace, lastBrace + 1);
+
+        // Strip markdown blocks and handle trailing commas inside arrays/objects
         jsonString = jsonString
+            .replace(/^```json\n|```$/gm, '')
             .replace(/,\s*([\]}])/g, '$1')
             .trim();
 
         const contract = JSON.parse(jsonString);
         await updateScratchpad(`CONTRACT DEFINED: ${contract.vulnerability_analysis.slice(0, 50)}...`);
         return contract;
-
     } catch (parseError) {
         console.error(chalk.red(`  🚨 JSON Parse Error at ${filePath}. Raw output was logged to scratchpad.`));
         await updateScratchpad(`CRITICAL_PARSE_ERROR: ${rawContent}`);
