@@ -51,6 +51,23 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
             console.log(moduleKey ? chalk.green(`     ✅ Context mapped.`) : chalk.red(`     ❌ Module missing.`));
             break;
 
+        case 'run_command': {
+            const cmd = args.command;
+            if (!cmd.startsWith('npm install') && !cmd.startsWith('npm list')) {
+                return { status: 'FAILED', result: 'REJECTED: Only npm install/list commands are allowed for safety.' };
+            }
+
+            try {
+                const { stdout, stderr } = await execPromise(cmd, { cwd: apiRoot });
+                return {
+                    status: 'SUCCESS',
+                    result: `Command Executed: ${cmd}\nSTDOUT: ${stdout}\nSTDERR: ${stderr}`
+                };
+            } catch (err: any) {
+                return { status: 'FAILED', result: `Execution Error: ${err.message}` };
+            }
+        }
+
         case 'read_file':
             try {
                 const stats = await fs.stat(fullPath);
@@ -155,4 +172,8 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
 ---`);
 
     return { status: 'CONTINUE', result, latestError };
+}
+
+function execPromise(command: any, arg1: { cwd: string; }): { stdout: any; stderr: any; } | PromiseLike<{ stdout: any; stderr: any; }> {
+    throw new Error('Function not implemented.');
 }
