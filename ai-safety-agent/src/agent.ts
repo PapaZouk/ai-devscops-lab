@@ -2,17 +2,15 @@ import OpenAI from 'openai';
 import fs from 'fs/promises';
 import fsSync from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
 import chalk from 'chalk';
 import { fileURLToPath } from 'url';
 import { runDiscovery } from './discoveryAgent.js';
-import { runReviewerAgent } from './reviewerAgent.js';
 import { runDefinition } from './definitionAgent.js';
 import { tools } from './tools/tools.js';
-import { getKnowledgeBase } from './tools/getKnowledgeBase.js';
 import { ensureDir } from './helpers/ensureDir.js';
 import { updateScratchpad } from './helpers/updateScratchpad.js';
 import { rollbackToSafety } from './helpers/rollbackToSafety.js';
+import { handleToolCall } from './handlers/toolHandler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const agentRoot = path.resolve(__dirname, '..');
@@ -46,15 +44,22 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
   const contract = await runDefinition(targetFile, initialCode, errorLog);
   console.log(chalk.green(`  ✅ Step 1: Definition Complete. Contract established.`));
 
-  console.log(chalk.magenta.bold(`\n📋 REMEDIATION CONTRACT: ${targetFile}`));
-  console.table({
-    "Vulnerability": { detail: contract.vulnerability_analysis },
-    "Security Standard": { detail: contract.security_standard },
-    "Required Changes": { detail: contract.required_changes.join(' | ') },
-    "Invariants": { detail: contract.functional_invariants.join(' | ') }
-  });
-  console.log("\n");
+  console.log(chalk.magenta.bold(`\n─── REMEDIATION CONTRACT: ${targetFile} ───`));
 
+  const display = (label: string, items: any, color: Function) => {
+    console.log(color(`\n${label}:`));
+    if (Array.isArray(items)) {
+      items.forEach(i => console.log(chalk.white(`• ${i}`)));
+    } else {
+      console.log(chalk.white(items || "N/A"));
+    }
+  };
+
+  display("VULNERABILITY", contract.vulnerability_analysis, chalk.red);
+  display("CHANGES", contract.required_changes, chalk.cyan);
+  display("INVARIANTS", contract.functional_invariants, chalk.green);
+
+  console.log(chalk.magenta(`\n${"─".repeat(targetFile.length + 30)}\n`));
   const backupFileName = `${path.basename(targetFile)}.bak`;
   const backupPath = path.resolve(backupDir, backupFileName);
   await fs.writeFile(backupPath, initialCode, 'utf8');
@@ -65,43 +70,33 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
   const systemPrompt: OpenAI.Chat.Completions.ChatCompletionMessageParam = {
     role: 'system',
     content: `You are a Senior DevSecOps Remediation Agent. 
-    Your logic, technical standards, and success criteria are strictly governed by the following REMEDIATION CONTRACT:
-    
-    ${JSON.stringify(contract, null, 2)}
+Your logic, technical standards, and success criteria are strictly governed by the following REMEDIATION CONTRACT:
 
-    MANDATORY WORKFLOW:
-    1. ANALYZE: Use 'api_directory_helper' and 'read_file' to understand the local environment.
-    2. PROPOSE: You MUST call 'propose_fix' and receive an "APPROVED" response before applying changes.
-    3. EXECUTE: Call 'write_fix' only after approval.
+${JSON.stringify(contract, null, 2)}
 
-    CORE OPERATING RULES:
-    1. CONTRACT ADHERENCE: Follow 'required_changes' and 'functional_invariants' exactly as defined in the contract.
-    2. FULL FILE WRITES: The 'write_fix' tool requires the 100% complete source code of the file.
-    3. NO HALLUCINATIONS: Never simulate tool output (e.g., tool_result) in your text responses.
-    4. PATH SAFETY: Verify paths represent files, not directories, before calling 'read_file'.`
+MANDATORY WORKFLOW:
+1. ANALYZE: Use 'api_directory_helper' and 'read_file' to understand the local environment, dependencies, and related test files.
+2. PROPOSE: You MUST call 'propose_fix' and receive an "APPROVED" response before applying any changes.
+3. EXECUTE: Call 'write_fix' only after receiving "APPROVED". If 'write_fix' fails validation, you must re-analyze and propose a new fix.
+
+CORE OPERATING RULES:
+1. CONTRACT ADHERENCE: Follow 'required_changes' and 'functional_invariants' exactly. Do not add features outside the contract.
+2. SCOPE & TEST ALIGNMENT: Your primary target is ${targetFile}, but you are REQUIRED to update related test files if your security changes cause existing tests to fail. Do not ignore test failures; fix the tests to match the new secure logic.
+3. MODULE STANDARDS: Strictly use ESM 'import/export' syntax. Ensure all local imports include the '.js' extension (e.g., import { x } from './file.js'). NEVER use 'require'.
+4. NO FALLBACKS: When handling environment variables, you must throw a hard error if they are missing. Do not use insecure fallbacks (e.g., ?? 'secret').
+5. RECOVERY PROTOCOL: If 'write_fix' fails validation or 'propose_fix' is rejected more than twice, you MUST call 'get_knowledge' with the query 'remediation examples' to align with proven security patterns.
+6. FULL FILE WRITES: The 'write_fix' tool requires the 100% complete source code of the file. Do not use placeholders or comments.
+7. NO HALLUCINATIONS: Never simulate tool output (e.g., tool_result) in your thought process. Only react to actual tool output provided by the system.`
   };
 
   let messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     systemPrompt,
-    {
-      role: 'user',
-      content: `TASK: Remediate ${targetFile} based on the contract. Begin by mapping the module dependencies.`
-    }
+    { role: 'user', content: `TASK: Remediate ${targetFile} based on the contract.` }
   ];
 
   try {
     for (let step = 0; step < 25; step++) {
       console.log(chalk.blue.bold(`\n🔄 Remediation Step [${step + 1}]`));
-      const helperCalls = messages.filter(m =>
-        m.role === 'assistant' &&
-        m.tool_calls?.some(tc => tc.function.name === 'api_directory_helper')
-      ).length;
-
-      if (helperCalls > 2) {
-        messages.push({ role: 'user', content: "SYSTEM: Loop detected. You have sufficient directory context. Use 'read_file' on the target and its dependencies to proceed." });
-        console.log(chalk.red.bold(`  ⚠️ Loop Guard: Forcing transition from discovery to execution.`));
-        continue;
-      }
 
       const response = await client.chat.completions.create({
         model: process.env.LMSTUDIO_MODEL_NAME || 'openai/gpt-oss-20b',
@@ -111,108 +106,53 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
       });
 
       const message = response.choices[0].message;
-
-      if (message.content?.includes("tool_result") || message.content?.includes("END_TOOL_RESULT")) {
-        messages.push({ role: 'user', content: "CRITICAL: Detected simulated tool output. Do not hallucinate results; use the provided tools and wait for the system response." });
-        console.log(chalk.red.bold(`  ⚠️ Hallucination Guard: Blocked simulated tool response.`));
-        continue;
-      }
-
-      if (!message.content && (!message.tool_calls || message.tool_calls.length === 0)) {
-        messages.push({ role: 'user', content: "Please provide a thought process and your next tool call." });
-        console.log(chalk.yellow.bold(`  ⚠️ Empty Response Guard: Requesting continuation.`));
-        continue;
-      }
-
       messages.push(message);
+
       if (message.content) {
         console.log(chalk.gray(`Thought: ${message.content.trim()}`));
         await updateScratchpad(`THOUGHT: ${message.content.trim()}`);
       }
 
+      if (!message.tool_calls || message.tool_calls.length === 0) {
+        const wasApproved = messages.some(m => m.role === 'tool' && m.content.includes('APPROVED'));
+
+        const nudgeMessage = wasApproved
+          ? "The fix was APPROVED. You must now call 'write_fix' to apply the changes."
+          : "Please proceed with the next step using the available tools.";
+
+        messages.push({ role: 'user', content: `SYSTEM: ${nudgeMessage}` });
+        continue;
+      }
+
       for (const toolCall of (message.tool_calls || [])) {
         const { name, arguments: argsString } = toolCall.function;
-        let args = JSON.parse(argsString);
-        let result = "";
+        const args = JSON.parse(argsString);
 
         console.log(chalk.cyan.bold(`\n  🛠️  TOOL: ${name}`));
 
         try {
-          if (name === 'get_knowledge') {
-            result = await getKnowledgeBase(args.query || args.path || "security");
-            console.log(chalk.cyan(`     ✅ Knowledge retrieved (${result.length} chars).`));
-          } else if (name === 'api_directory_helper') {
-            const mapPath = path.resolve(agentRoot, 'agent_knowledge/api_map.json');
-            const mapData = JSON.parse(await fs.readFile(mapPath, 'utf8'));
-            const target = args.moduleName?.toLowerCase();
-            const moduleKey = Object.keys(mapData).find(k => k.toLowerCase().includes(target || ""));
-            result = JSON.stringify(moduleKey ? mapData[moduleKey] : "Module context not found.", null, 2);
-            console.log(moduleKey ? chalk.green(`     ✅ Context mapped for ${moduleKey}`) : chalk.red(`     ❌ Module context missing.`));
-          } else {
-            const rawPath = args.path || "";
-            if (!rawPath) throw new Error("Path argument is missing.");
+          const { status, result, latestError: updatedError } = await handleToolCall(name, args, {
+            apiRoot,
+            agentRoot,
+            initialCode,
+            latestError,
+            contract,
+            messages
+          });
 
-            const isInternal = rawPath.startsWith('.agent_memory');
-            const fullPath = isInternal ? path.resolve(agentRoot, rawPath) : path.resolve(apiRoot, rawPath);
+          latestError = updatedError;
 
-            if (name === 'read_file') {
-              const stats = await fs.stat(fullPath);
-              if (stats.isDirectory()) {
-                result = `ERROR: '${args.path}' is a directory. Please provide a specific file path.`;
-                console.log(chalk.red(`     ❌ Safety: Prevented directory read.`));
-              } else {
-                result = await fs.readFile(fullPath, 'utf-8');
-                console.log(chalk.green(`     ✅ Read ${args.path} (${result.length} chars)`));
-              }
-            } else if (name === 'write_fix') {
-              // Check if the Reviewer Agent (propose_fix) has already given an "APPROVED" response in this conversation
-              const wasApproved = messages.some(m => m.role === 'tool' && m.content === 'APPROVED');
+          messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
 
-              if (!wasApproved) {
-                result = `REJECTED: You must call 'propose_fix' and receive an "APPROVED" status before calling 'write_fix'.`;
-                console.log(chalk.yellow.bold(`     ⚠️  Security Bypass Attempt: Agent tried to write without Auditor approval.`));
-              } else if (!args.code.includes('import') && !args.code.includes('require')) {
-                // Adjusted to support both ESM and CJS dynamically
-                result = `REJECTED: Partial code snippet. Provide the 100% complete file content including imports/requires.`;
-                console.log(chalk.red(`     ❌ Guard: Blocked partial file write (Missing imports).`));
-              } else if (args.code.length < (initialCode.length * 0.6)) {
-                result = `REJECTED: Submission is too short (~${args.code.length} chars). Original was ~${initialCode.length}. Provide the FULL file.`;
-                console.log(chalk.red(`     ❌ Guard: Blocked partial file write (Length check).`));
-              } else {
-                await fs.writeFile(fullPath, args.code, 'utf8');
-                console.log(chalk.yellow(`     💾 Changes saved. Initiating validation...`));
-                try {
-                  // Run linting and tests
-                  execSync(`npx @biomejs/biome check --write ${fullPath}`, { cwd: apiRoot, stdio: 'pipe' });
-                  execSync('npm test', { cwd: apiRoot, stdio: 'pipe' });
-                  console.log(chalk.green.bold(`     ✅ SUCCESS: All tests passed and code linted.`));
-                  return `SUCCESS: ${args.path} verified.`;
-                } catch (e: any) {
-                  const out = (e.stdout?.toString() || "") + (e.stderr?.toString() || "");
-                  latestError = out;
-                  result = `VALIDATION_FAILED: ${out.slice(0, 800)}\n\nINSTRUCTION: Analyze the test failure below. Adjust your code and call 'propose_fix' again before retrying 'write_fix'.`;
-                  console.log(chalk.red(`     ❌ Validation Failed: Error feedback sent to agent.`));
-                }
-              }
-            } else if (name === 'propose_fix') {
-              console.log(chalk.blue(`     🔍 Reviewer Agent: Auditing proposed fix...`));
-              const audit = await runReviewerAgent(args.path, args.code, initialCode, latestError, contract);
-              result = audit.approved ? "APPROVED" : `REJECTED: ${audit.feedback}`;
-              if (audit.approved) {
-                console.log(chalk.green.bold(`     ✅ Auditor: Approved.`));
-              } else {
-                console.log(chalk.red.bold(`     ❌ Auditor: Rejected - ${audit.feedback}`));
-              }
-            }
+          if (status === 'COMPLETE') {
+            console.log(chalk.green.bold(`🎉 Remediation Successful! Changes are live.`));
+            return `SUCCESS: ${targetFile} verified.`;
           }
         } catch (err: any) {
           console.error(chalk.red(`     🚨 Execution Error: ${err.message}`));
           await rollbackToSafety(apiRoot);
           throw err;
         }
-
-        await updateScratchpad(`TOOL: ${name} | RESULT: ${result.slice(0, 100)}...`);
-        messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
       }
     }
     return "Remediation failed after max steps.";
