@@ -16,7 +16,7 @@ export async function runReviewerAgent(
     console.log(chalk.magenta(`  🔍 Auditor: Analyzing proposed changes for ${filePath}...`));
 
     const response = await client.chat.completions.create({
-        model: 'google/gemma-3-4b',
+        model: process.env.LMSTUDIO_MODEL_NAME || 'openai/gpt-oss-20b',
         messages: [
             {
                 role: 'system',

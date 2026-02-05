@@ -28,10 +28,10 @@ const RemediationStrategy = z.object({
         if (!Array.isArray(val)) return [];
         return val.map(item => {
             let cmd = typeof item === 'object' ? (item.command || item.cmd || Object.values(item)[0]) : String(item);
-            
+
             // 🧹 SANITIZER: Strip markdown, backticks, and extra whitespace
             cmd = cmd.replace(/[`]/g, "").trim();
-            
+
             // 🛠️ NORMALIZER: Convert "npm i" or "npm inst" to "npm install" to satisfy the Zod whitelist
             if (cmd.startsWith("npm i ") || cmd.startsWith("npm inst ")) {
                 cmd = cmd.replace(/^npm i(nst)?/, "npm install");
@@ -56,23 +56,23 @@ async function startAIRemidiation() {
     try {
         const scanResult = await execaAsync(`npm run scan`).catch(err => err);
         const scanOutput = (scanResult.stdout || scanResult.message || "").substring(0, 2000);
-        
+
         if (scanOutput.includes("No vulnerabilities found!")) {
             console.log(chalk.green.bold("✅ Environment is already secure."));
             return;
         }
 
         console.log(chalk.yellow("Consulting AI..."));
-        
+
         const response = await lmStudio.chat.completions.create({
-            model: process.env.LMSTUDIO_MODEL_NAME || "google/gemma-3-4b",
+            model: process.env.LMSTUDIO_MODEL_NAME || "openai/gpt-oss-20b",
             messages: [
                 { role: "system", content: "You are a DevSecOps bot. Return ONLY JSON." },
                 { role: "user", content: `SCAN DATA:\n${scanOutput}\nReturn JSON.` }
             ],
-            temperature: 0, 
+            temperature: 0,
         });
-        
+
         const rawContent = response.choices[0]?.message?.content || "";
         const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
         if (!jsonMatch) throw new Error("AI did not return JSON.");
@@ -90,7 +90,7 @@ async function startAIRemidiation() {
         while (!integrity.passed && attempts < MAX_ATTEMPTS) {
             attempts++;
             console.error(chalk.red.bold(`\n❌ Tests failed (Attempt ${attempts}/${MAX_ATTEMPTS}). Healing...`));
-            
+
             const srcPath = path.resolve(API_ROOT, "src");
             const allFiles = await getAllFiles(srcPath);
             const targetFile = allFiles.find(f => integrity.lastTestError.includes(path.basename(f)));
@@ -98,16 +98,16 @@ async function startAIRemidiation() {
             if (targetFile) {
                 console.log(chalk.cyan(`🎯 Target: ${path.basename(targetFile)}`));
                 const biomeIssues = await getBiomeDiagnostics(targetFile);
-                
+
                 // Try to fix
                 const fixApplied = await attemptSurgicalFix(targetFile, integrity.lastTestError, biomeIssues);
-                
+
                 if (fixApplied) {
                     // Check again
                     integrity = await checkIntegrity();
                     if (integrity.passed) {
                         console.log(chalk.green.bold("✨ Tests passed! Code is now healthy."));
-                        break; 
+                        break;
                     }
                 }
             } else {
@@ -135,7 +135,7 @@ async function startAIRemidiation() {
 async function applyPatch(commands: string[]) {
     for (const cmd of commands) {
         console.log(chalk.gray(`Executing: ${cmd}`));
-        await execaAsync(cmd, { cwd: API_ROOT }).catch(() => {});
+        await execaAsync(cmd, { cwd: API_ROOT }).catch(() => { });
     }
 }
 
@@ -160,7 +160,7 @@ async function getAllFiles(dirPath: string, arrayOfFiles: string[] = []) {
 
 async function rollback() {
     console.log(chalk.yellow("Rolling back changes..."));
-    await execaAsync(`git reset --hard HEAD`, { cwd: API_ROOT }).catch(() => {});
+    await execaAsync(`git reset --hard HEAD`, { cwd: API_ROOT }).catch(() => { });
 }
 
 startAIRemidiation().catch(console.error);
