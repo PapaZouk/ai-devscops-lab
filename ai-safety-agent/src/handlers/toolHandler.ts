@@ -81,9 +81,12 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
             break;
 
         case 'write_fix':
-            const lastApproval = [...messages].reverse().find(m =>
-                m.role === 'tool' && m.content === `APPROVED: ${args.path}`
-            );
+            const lastApproval = [...messages].reverse().find(m => {
+                if (m.role !== 'tool' || !m.content?.startsWith('APPROVED: ')) return false;
+                const approvedPath = m.content.replace('APPROVED: ', '').trim();
+                // Resolve both paths to absolute to ensure they match regardless of './'
+                return path.resolve(apiRoot, approvedPath) === path.resolve(apiRoot, args.path);
+            });
 
             if (!lastApproval) {
                 result = `REJECTED: ${args.path} not approved.`;
@@ -123,10 +126,10 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
             const currentApiMap = JSON.parse(mapRaw);
 
             const moduleEntry = Object.values(currentApiMap).find((m: any) =>
-                m.logic.includes(args.path) || args.path.includes(m.logic.replace('./', ''))
+                m.logic?.includes(args.path) || (m.logic && args.path.includes(m.logic.replace('./', '')))
             ) as any;
 
-            const targetTestPath = moduleEntry?.tests || `tests/${path.basename(args.path).replace('.ts', '.test.ts')}`;
+            const targetTestPath = moduleEntry?.tests || `tests/${path.basename(args.path).replace(/\.test\.ts$|\.ts$/, '')}.test.ts`;
 
             const testCode = await runTestingAgent(
                 targetTestPath,
