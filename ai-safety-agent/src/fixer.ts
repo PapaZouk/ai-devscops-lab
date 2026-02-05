@@ -16,8 +16,8 @@ const lmStudio = new OpenAI({
  * We've removed FixResultSchema and JSON_schema mode to prevent 4b model hallucinations.
  */
 export async function attemptSurgicalFix(
-    targetFile: string, 
-    testError: string, 
+    targetFile: string,
+    testError: string,
     biomeIssues: any[] | null = null
 ) {
     console.log(chalk.magenta.bold(`\n🛠  Attempting surgical fix for ${path.basename(targetFile)}...`));
@@ -51,18 +51,18 @@ export async function attemptSurgicalFix(
 
     try {
         const response = await lmStudio.chat.completions.create({
-            model: process.env.LMSTUDIO_MODEL_NAME || "google/gemma-3-4b",
+            model: process.env.LMSTUDIO_MODEL_NAME || "openai/gpt-oss-20b",
             messages: [
                 { role: "system", content: "You are a code-only assistant. Always respond with a single typescript markdown block." },
                 { role: "user", content: prompt }
             ],
             // Removed response_format: { type: 'json_schema' } as it causes 4b models to crash
             temperature: 0.1, // Low temperature for stability
-            max_tokens: 3000, 
+            max_tokens: 3000,
         });
 
         const rawResponse = response.choices[0]?.message?.content?.trim() || "";
-        
+
         console.log(chalk.magenta("\n--- [RAW AI RESPONSE] ---"));
         console.log(rawResponse);
         console.log(chalk.magenta("-------------------------\n"));
@@ -83,7 +83,7 @@ export async function attemptSurgicalFix(
         // Backup and write
         await fs.writeFile(`${targetFile}.bak`, originalCode);
         await fs.writeFile(targetFile, fixedCode, "utf-8");
-        
+
         console.log(chalk.green.bold(`✅ Surgical fix applied to ${path.basename(targetFile)}.`));
         return true;
 

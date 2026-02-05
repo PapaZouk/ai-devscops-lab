@@ -7,6 +7,7 @@ import chalk from 'chalk';
 import { fileURLToPath } from 'url';
 import { runDiscovery } from './discoveryAgent.js';
 import { runReviewerAgent } from './reviewerAgent.js';
+import { runDefinition } from './definitionAgent.js';
 import { tools } from './tools/tools.js';
 import { getKnowledgeBase } from './tools/getKnowledgeBase.js';
 import { ensureDir } from './helpers/ensureDir.js';
@@ -31,82 +32,79 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
   console.log(chalk.yellow.bold(`\n🚀 System Startup: Initializing Context & Discovery`));
 
   try {
-    console.log(chalk.blue(`  🔍 Step 0: Discovery Agent - Scanning project structure...`));
-    await runDiscovery(apiRoot); // We will define this helper below
+    await runDiscovery(apiRoot);
     console.log(chalk.green(`  ✅ Step 0: Discovery Complete. API Map generated.`));
   } catch (err: any) {
-    console.log(chalk.red(`  ⚠️  Discovery Warning: ${err.message}. Proceeding with manual exploration.`));
+    console.log(chalk.red(`  ⚠️ Discovery Warning: ${err.message}`));
   }
-
-  console.log(chalk.yellow.bold(`\n🚀 System Startup: Initializing Context & Backups`));
 
   if (fsSync.existsSync(memoryDir)) await fs.rm(memoryDir, { recursive: true, force: true });
   await ensureDir(backupDir);
 
   const initialCode = await fs.readFile(path.resolve(apiRoot, targetFile), 'utf-8');
+
+  const contract = await runDefinition(targetFile, initialCode, errorLog);
+  console.log(chalk.green(`  ✅ Step 1: Definition Complete. Contract established.`));
+
+  console.log(chalk.magenta.bold(`\n📋 REMEDIATION CONTRACT: ${targetFile}`));
+  console.table({
+    "Vulnerability": { detail: contract.vulnerability_analysis },
+    "Security Standard": { detail: contract.security_standard },
+    "Required Changes": { detail: contract.required_changes.join(' | ') },
+    "Invariants": { detail: contract.functional_invariants.join(' | ') }
+  });
+  console.log("\n");
+
   const backupFileName = `${path.basename(targetFile)}.bak`;
   const backupPath = path.resolve(backupDir, backupFileName);
   await fs.writeFile(backupPath, initialCode, 'utf8');
-
-  const relativeBackupPath = path.join('.agent_memory', 'backups', backupFileName);
-  console.log(chalk.cyan(`  📝 Scratchpad & Backup secured: ${relativeBackupPath}`));
 
   const initialLog = `# Remediation Log: ${targetFile}\n\n## Initial Error\n\`\`\`\n${errorLog}\n\`\`\`\n---\n`;
   await fs.writeFile(scratchPath, initialLog, 'utf8');
 
   const systemPrompt: OpenAI.Chat.Completions.ChatCompletionMessageParam = {
     role: 'system',
-    content: `You are a Senior DevSecOps Remediation Agent. Your ONLY task is to fix security in '${targetFile}'.
+    content: `You are a Senior DevSecOps Remediation Agent. 
+    Your logic, technical standards, and success criteria are strictly governed by the following REMEDIATION CONTRACT:
+    
+    ${JSON.stringify(contract, null, 2)}
 
-        ### CORE OPERATING PROCEDURE (MANDATORY):
-        1. DISCOVERY: Your first action MUST be to call 'api_directory_helper' for the module relevant to the target file.
-        2. SOURCE OF TRUTH: Use the paths returned by the helper for all imports and test references. Do not guess paths or use 'list_files' if the map has the answer.
-        3. ESM COMPLIANCE: In this project, imports MUST include the '.js' extension (e.g., use '../db.js', not '../db').
+    MANDATORY WORKFLOW:
+    1. ANALYZE: Use 'api_directory_helper' and 'read_file' to understand the local environment.
+    2. PROPOSE: You MUST call 'propose_fix' and receive an "APPROVED" response before applying changes.
+    3. EXECUTE: Call 'write_fix' only after approval.
 
-        ### TECHNICAL CONSTRAINTS:
-        - FULL FILE WRITES: 'write_fix' is a DESTRUCTIVE overwrite. You MUST provide the FULL file content. Never send snippets.
-        - LOGIC PRESERVATION: You MUST preserve all original logic, functions, and imports (like 'db') unless they are the direct cause of the security vulnerability.
-        - NO UNAUTHORIZED MODS: DO NOT modify 'jest.config.js', 'package.json', or any files in the 'tests/' directory.
-        - STRICT IMPORTS: Only use packages found in the original file or 'package.json'. Do not guess package names.
-        - JWT STANDARDS: 'jsonwebtoken' usually requires 'import jwt from "jsonwebtoken"' followed by 'jwt.sign()'. Avoid calling 'sign()' directly unless explicitly imported.
-
-        ### SECURITY REQUIREMENTS:
-        - SECRETS: Use 'process.env' for all secrets. Do NOT include hardcoded fallbacks (e.g., || 'secret').
-        - VALIDATION: If tests fail, analyze the error trace. Failure is usually due to deleted logic or incorrect ESM import syntax.
-        
-        Your goal is a verified, passing test suite with zero hardcoded secrets.`
+    CORE OPERATING RULES:
+    1. CONTRACT ADHERENCE: Follow 'required_changes' and 'functional_invariants' exactly as defined in the contract.
+    2. FULL FILE WRITES: The 'write_fix' tool requires the 100% complete source code of the file.
+    3. NO HALLUCINATIONS: Never simulate tool output (e.g., tool_result) in your text responses.
+    4. PATH SAFETY: Verify paths represent files, not directories, before calling 'read_file'.`
   };
 
   let messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     systemPrompt,
     {
       role: 'user',
-      content: `TASK: Fix security in ${targetFile}.
-    
-        MANDATORY STARTING STEP:
-        1. Call 'api_directory_helper' for the module associated with this file.
-        2. Read the files identified by the helper to understand the relationship between service, repository, and tests.
-        
-        INITIAL ERROR: ${errorLog}`
+      content: `TASK: Remediate ${targetFile} based on the contract. Begin by mapping the module dependencies.`
     }
   ];
 
   try {
     for (let step = 0; step < 25; step++) {
-      if (step === 15) {
-        console.log(chalk.red.bold(`\n🔄 MISSION RECALL: Re-focusing agent...`));
-        messages.push({
-          role: 'user',
-          content: `CRITICAL RECALL: You are here to fix the hardcoded secret in '${targetFile}'. 
-        Your previous attempts may have failed because you provided partial code snippets or 
-        modified the wrong files. Read '${targetFile}' again, and provide the ENTIRE 
-        file content (including all imports) in your next 'write_fix'.`
-        });
+      console.log(chalk.blue.bold(`\n🔄 Remediation Step [${step + 1}]`));
+      const helperCalls = messages.filter(m =>
+        m.role === 'assistant' &&
+        m.tool_calls?.some(tc => tc.function.name === 'api_directory_helper')
+      ).length;
+
+      if (helperCalls > 2) {
+        messages.push({ role: 'user', content: "SYSTEM: Loop detected. You have sufficient directory context. Use 'read_file' on the target and its dependencies to proceed." });
+        console.log(chalk.red.bold(`  ⚠️ Loop Guard: Forcing transition from discovery to execution.`));
+        continue;
       }
 
-      console.log(chalk.blue.bold(`\n--- [STEP ${step + 1}/25] ---`));
       const response = await client.chat.completions.create({
-        model: process.env.LMSTUDIO_MODEL_NAME || 'google/gemma-3-4b',
+        model: process.env.LMSTUDIO_MODEL_NAME || 'openai/gpt-oss-20b',
         messages,
         tools,
         tool_choice: 'auto'
@@ -114,12 +112,15 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
 
       const message = response.choices[0].message;
 
+      if (message.content?.includes("tool_result") || message.content?.includes("END_TOOL_RESULT")) {
+        messages.push({ role: 'user', content: "CRITICAL: Detected simulated tool output. Do not hallucinate results; use the provided tools and wait for the system response." });
+        console.log(chalk.red.bold(`  ⚠️ Hallucination Guard: Blocked simulated tool response.`));
+        continue;
+      }
+
       if (!message.content && (!message.tool_calls || message.tool_calls.length === 0)) {
-        console.log(chalk.red("     ⚠️ Agent returned empty response. Nudging..."));
-        messages.push({
-          role: 'user',
-          content: "I didn't receive a response or a tool call. Please analyze the files you just read and use 'propose_fix' or 'write_fix' to proceed."
-        });
+        messages.push({ role: 'user', content: "Please provide a thought process and your next tool call." });
+        console.log(chalk.yellow.bold(`  ⚠️ Empty Response Guard: Requesting continuation.`));
         continue;
       }
 
@@ -132,91 +133,90 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
       for (const toolCall of (message.tool_calls || [])) {
         const { name, arguments: argsString } = toolCall.function;
         let args = JSON.parse(argsString);
+        let result = "";
 
         console.log(chalk.cyan.bold(`\n  🛠️  TOOL: ${name}`));
-        console.log(chalk.blackBright(`     Args: ${JSON.stringify(args)}`));
 
-        let result = "";
         try {
           if (name === 'get_knowledge') {
-            result = await getKnowledgeBase(args.query || args.path || "jwt");
-          } else if (name === 'search_code') {
-            const out = execSync(`grep -r "${args.query}" . --exclude-dir=node_modules | head -n 20`, { cwd: apiRoot }).toString();
-            result = out || "No matches found.";
-          } else if (name === 'list_files') {
-            const fullPath = path.resolve(apiRoot, args.path || ".");
-            const files = await fs.readdir(fullPath, { recursive: true });
-            result = files.slice(0, 100).join('\n');
+            result = await getKnowledgeBase(args.query || args.path || "security");
+            console.log(chalk.cyan(`     ✅ Knowledge retrieved (${result.length} chars).`));
           } else if (name === 'api_directory_helper') {
             const mapPath = path.resolve(agentRoot, 'agent_knowledge/api_map.json');
-            if (!fsSync.existsSync(mapPath)) {
-              result = "ERROR: API Map not found.";
-            } else {
-              const mapData = JSON.parse(await fs.readFile(mapPath, 'utf8'));
-
-              const target = args.moduleName?.toLowerCase();
-              const moduleKey = Object.keys(mapData).find(k => k.toLowerCase().includes(target || ""));
-              const info = moduleKey ? mapData[moduleKey] : "Module not found in map.";
-
-              result = `PROJECT MAP DATA for ${args.moduleName || 'requested module'}:\n${JSON.stringify(info, null, 2)}`;
-            }
+            const mapData = JSON.parse(await fs.readFile(mapPath, 'utf8'));
+            const target = args.moduleName?.toLowerCase();
+            const moduleKey = Object.keys(mapData).find(k => k.toLowerCase().includes(target || ""));
+            result = JSON.stringify(moduleKey ? mapData[moduleKey] : "Module context not found.", null, 2);
+            console.log(moduleKey ? chalk.green(`     ✅ Context mapped for ${moduleKey}`) : chalk.red(`     ❌ Module context missing.`));
           } else {
             const rawPath = args.path || "";
-            if (!rawPath) throw new Error("Agent failed to provide a path.");
+            if (!rawPath) throw new Error("Path argument is missing.");
 
             const isInternal = rawPath.startsWith('.agent_memory');
             const fullPath = isInternal ? path.resolve(agentRoot, rawPath) : path.resolve(apiRoot, rawPath);
 
-            console.log(chalk.blue(`     Path Resolved: ${fullPath}`));
-
             if (name === 'read_file') {
-              result = await fs.readFile(fullPath, 'utf-8');
-              console.log(chalk.green(`     ✅ Read Successful.`));
+              const stats = await fs.stat(fullPath);
+              if (stats.isDirectory()) {
+                result = `ERROR: '${args.path}' is a directory. Please provide a specific file path.`;
+                console.log(chalk.red(`     ❌ Safety: Prevented directory read.`));
+              } else {
+                result = await fs.readFile(fullPath, 'utf-8');
+                console.log(chalk.green(`     ✅ Read ${args.path} (${result.length} chars)`));
+              }
             } else if (name === 'write_fix') {
-              const hasImports = args.code.includes('import');
-              const isTooShort = args.code.length < (initialCode.length * 0.5);
+              // Check if the Reviewer Agent (propose_fix) has already given an "APPROVED" response in this conversation
+              const wasApproved = messages.some(m => m.role === 'tool' && m.content === 'APPROVED');
 
-              if (!hasImports || isTooShort) {
-                console.log(chalk.red(`     ⚠️  Guard Triggered: Agent tried to write a partial snippet.`));
-                result = `REJECTED: You provided a partial snippet. You MUST provide the FULL file content, including all original imports and functions. Length: ${args.code.length} vs Original: ${initialCode.length}`;
+              if (!wasApproved) {
+                result = `REJECTED: You must call 'propose_fix' and receive an "APPROVED" status before calling 'write_fix'.`;
+                console.log(chalk.yellow.bold(`     ⚠️  Security Bypass Attempt: Agent tried to write without Auditor approval.`));
+              } else if (!args.code.includes('import') && !args.code.includes('require')) {
+                // Adjusted to support both ESM and CJS dynamically
+                result = `REJECTED: Partial code snippet. Provide the 100% complete file content including imports/requires.`;
+                console.log(chalk.red(`     ❌ Guard: Blocked partial file write (Missing imports).`));
+              } else if (args.code.length < (initialCode.length * 0.6)) {
+                result = `REJECTED: Submission is too short (~${args.code.length} chars). Original was ~${initialCode.length}. Provide the FULL file.`;
+                console.log(chalk.red(`     ❌ Guard: Blocked partial file write (Length check).`));
               } else {
                 await fs.writeFile(fullPath, args.code, 'utf8');
-                console.log(chalk.yellow(`     💾 File saved. Running tests...`));
-
+                console.log(chalk.yellow(`     💾 Changes saved. Initiating validation...`));
                 try {
+                  // Run linting and tests
                   execSync(`npx @biomejs/biome check --write ${fullPath}`, { cwd: apiRoot, stdio: 'pipe' });
                   execSync('npm test', { cwd: apiRoot, stdio: 'pipe' });
+                  console.log(chalk.green.bold(`     ✅ SUCCESS: All tests passed and code linted.`));
                   return `SUCCESS: ${args.path} verified.`;
                 } catch (e: any) {
                   const out = (e.stdout?.toString() || "") + (e.stderr?.toString() || "");
                   latestError = out;
-                  console.log(chalk.red(`     ❌ Validation Failed.`));
-
-                  result = `VALIDATION_FAILED. 
-                  The tests failed. Check for missing variables (e.g. 'sign' vs 'jwt.sign') or bad imports.
-                  TRACE:
-                  ${out.slice(0, 500)}`;
+                  result = `VALIDATION_FAILED: ${out.slice(0, 800)}\n\nINSTRUCTION: Analyze the test failure below. Adjust your code and call 'propose_fix' again before retrying 'write_fix'.`;
+                  console.log(chalk.red(`     ❌ Validation Failed: Error feedback sent to agent.`));
                 }
               }
             } else if (name === 'propose_fix') {
-              const original = await fs.readFile(backupPath, 'utf-8');
-              const review = await runReviewerAgent(args.path, args.code, original, latestError);
-              result = review.approved ? "APPROVED" : `REJECTED: ${review.feedback}`;
-              await updateScratchpad(`AUDITOR REVIEW: ${review.approved ? 'APPROVED' : 'REJECTED'}\nFEEDBACK: ${review.feedback}`);
-              console.log(review.approved ? chalk.green(`     ✅ Approved`) : chalk.red(`     ❌ Rejected`));
+              console.log(chalk.blue(`     🔍 Reviewer Agent: Auditing proposed fix...`));
+              const audit = await runReviewerAgent(args.path, args.code, initialCode, latestError, contract);
+              result = audit.approved ? "APPROVED" : `REJECTED: ${audit.feedback}`;
+              if (audit.approved) {
+                console.log(chalk.green.bold(`     ✅ Auditor: Approved.`));
+              } else {
+                console.log(chalk.red.bold(`     ❌ Auditor: Rejected - ${audit.feedback}`));
+              }
             }
           }
         } catch (err: any) {
-          console.error("Critical Agent Error. Rolling back to safety...");
+          console.error(chalk.red(`     🚨 Execution Error: ${err.message}`));
           await rollbackToSafety(apiRoot);
           throw err;
         }
+
         await updateScratchpad(`TOOL: ${name} | RESULT: ${result.slice(0, 100)}...`);
         messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
       }
     }
-    return "Failed.";
+    return "Remediation failed after max steps.";
   } finally {
-    console.log(chalk.yellow.bold(`\n🔒 System Shutdown: Finalizing Logs & Backups`));
+    console.log(chalk.yellow.bold(`\n🔒 System Shutdown: Cleaning up session...`));
   }
 }
