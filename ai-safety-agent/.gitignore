@@ -1,1 +1,4 @@
 ./.agent_memory
+*.bak
+*.tmp
+*.md

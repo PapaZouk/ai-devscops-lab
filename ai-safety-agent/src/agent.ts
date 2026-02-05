@@ -7,6 +7,11 @@ import chalk from 'chalk';
 import { fileURLToPath } from 'url';
 import { runDiscovery } from './discoveryAgent.js';
 import { runReviewerAgent } from './reviewerAgent.js';
+import { tools } from './tools/tools.js';
+import { getKnowledgeBase } from './tools/getKnowledgeBase.js';
+import { ensureDir } from './helpers/ensureDir.js';
+import { updateScratchpad } from './helpers/updateScratchpad.js';
+import { rollbackToSafety } from './helpers/rollbackToSafety.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const agentRoot = path.resolve(__dirname, '..');
@@ -15,52 +20,6 @@ const client = new OpenAI({
   baseURL: 'http://localhost:1234/v1',
   apiKey: 'not-needed',
 });
-
-// --- HELPERS ---
-
-export async function ensureDir(dirPath: string) {
-  if (!fsSync.existsSync(dirPath)) await fs.mkdir(dirPath, { recursive: true });
-}
-
-async function updateScratchpad(content: string) {
-  const memoryDir = path.resolve(agentRoot, '.agent_memory');
-  await ensureDir(memoryDir);
-  const scratchPath = path.resolve(memoryDir, 'scratchpad.md');
-  const timestamp = new Date().toLocaleTimeString();
-
-  let displayContent = content;
-  if (content.includes("REJECTED") || content.includes("VALIDATION_FAILED") || content.includes("ERROR")) {
-    displayContent = content.slice(0, 1500); // Give ample room for stack traces
-  } else if (content.length > 500) {
-    displayContent = content.slice(0, 500) + "... [TRUNCATED]";
-  }
-
-  const entry = `\n### [${timestamp}] LOG ENTRY\n${displayContent}\n---\n`;
-  await fs.appendFile(scratchPath, entry, 'utf8');
-}
-
-async function getKnowledgeBase(query: string): Promise<string> {
-  const kbPath = path.resolve(__dirname, '../agent_knowledge/remediation_examples.json');
-  const library: Record<string, any> = {
-    jwt: { title: "JWT Security", code: "import jwt from 'jsonwebtoken';\nconst token = jwt.sign({ id: 1 }, process.env.JWT_SECRET, { algorithm: 'HS256' });" },
-    zod: { title: "Zod Validation", code: "import { z } from 'zod';\nconst schema = z.object({ email: z.string().email() });" },
-    env: { title: "Env Vars", code: "const secret = process.env.JWT_SECRET; // Never hardcode defaults" }
-  };
-
-  if (!fsSync.existsSync(kbPath)) {
-    const key = Object.keys(library).find(k => query.toLowerCase().includes(k));
-    return key ? `[REFERENCE] ${library[key].code}` : "Use process.env and standard ESM imports.";
-  }
-
-  const data = JSON.parse(await fs.readFile(kbPath, 'utf8'));
-  const normalizedQuery = query.toLowerCase();
-  const key = Object.keys(data).find(k => normalizedQuery.includes(k) || k.includes(normalizedQuery));
-  return key ? `[REFERENCE: ${data[key].title}]\n${data[key].description}\n\nCODE:\n${data[key].code}` : "No specific match. Use standard ESM.";
-}
-
-
-
-// --- MAIN REMEDIATOR ---
 
 export async function runSmartRemediator(targetFile: string, errorLog: string, apiRoot: string) {
   const memoryDir = path.resolve(agentRoot, '.agent_memory');
@@ -71,7 +30,6 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
 
   console.log(chalk.yellow.bold(`\n🚀 System Startup: Initializing Context & Discovery`));
 
-  // --- NEW: RUN DISCOVERY AGENT FIRST ---
   try {
     console.log(chalk.blue(`  🔍 Step 0: Discovery Agent - Scanning project structure...`));
     await runDiscovery(apiRoot); // We will define this helper below
@@ -133,43 +91,6 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
     }
   ];
 
-  const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
-    { type: 'function', function: { name: 'read_file', description: 'Read a file.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
-    { type: 'function', function: { name: 'list_files', description: 'Recursively list files.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
-    { type: 'function', function: { name: 'search_code', description: 'Search for text in project.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } } },
-    { type: 'function', function: { name: 'get_knowledge', description: 'Lookup secure syntax.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } } },
-    {
-      type: 'function',
-      function: {
-        name: 'write_fix',
-        description: 'CRITICAL: This overwrites the entire file. You must include EVERY line of code, all imports, and all functions. Never send snippets.',
-        parameters: {
-          type: 'object',
-          properties: {
-            path: { type: 'string' },
-            code: { type: 'string', description: 'The complete, full source code of the file.' }
-          },
-          required: ['path', 'code']
-        }
-      }
-    },
-    { type: 'function', function: { name: 'propose_fix', description: 'Request audit.', parameters: { type: 'object', properties: { path: { type: 'string' }, code: { type: 'string' } }, required: ['path', 'code'] } } },
-    {
-      type: 'function',
-      function: {
-        name: 'api_directory_helper',
-        description: 'Lookup the verified project map to find services, repositories, and test files.',
-        parameters: {
-          type: 'object',
-          properties: {
-            moduleName: { type: 'string', description: 'e.g., "auth", "products"' }
-          },
-          required: ['moduleName']
-        }
-      }
-    }
-  ];
-
   try {
     for (let step = 0; step < 25; step++) {
       if (step === 15) {
@@ -184,11 +105,21 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
       }
 
       console.log(chalk.blue.bold(`\n--- [STEP ${step + 1}/25] ---`));
-      const response = await client.chat.completions.create({ model: 'google/gemma-3-4b', messages, tools, tool_choice: 'auto' });
+      const response = await client.chat.completions.create({
+        model: process.env.LMSTUDIO_MODEL_NAME || 'google/gemma-3-4b',
+        messages,
+        tools,
+        tool_choice: 'auto'
+      });
+
       const message = response.choices[0].message;
 
       if (!message.content && (!message.tool_calls || message.tool_calls.length === 0)) {
-        messages.push({ role: 'user', content: "Use a tool like 'read_file' to continue." });
+        console.log(chalk.red("     ⚠️ Agent returned empty response. Nudging..."));
+        messages.push({
+          role: 'user',
+          content: "I didn't receive a response or a tool call. Please analyze the files you just read and use 'propose_fix' or 'write_fix' to proceed."
+        });
         continue;
       }
 
@@ -276,8 +207,9 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
             }
           }
         } catch (err: any) {
-          result = `ERROR: ${err.message}`;
-          console.log(chalk.red(`     ⚠️  ${result}`));
+          console.error("Critical Agent Error. Rolling back to safety...");
+          await rollbackToSafety(apiRoot);
+          throw err;
         }
         await updateScratchpad(`TOOL: ${name} | RESULT: ${result.slice(0, 100)}...`);
         messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
@@ -285,15 +217,6 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
     }
     return "Failed.";
   } finally {
-    // Keep memory for analysis
+    console.log(chalk.yellow.bold(`\n🔒 System Shutdown: Finalizing Logs & Backups`));
   }
-}
-
-export async function rollbackToSafety(apiRoot: string) {
-  const memoryDir = path.resolve(agentRoot, '.agent_memory');
-  try {
-    if (fsSync.existsSync(memoryDir)) await fs.rm(memoryDir, { recursive: true, force: true });
-    execSync('git reset --hard HEAD', { cwd: apiRoot, stdio: 'ignore' });
-    execSync('git clean -fd', { cwd: apiRoot, stdio: 'ignore' });
-  } catch (err) { }
 }
