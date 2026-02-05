@@ -1,45 +1,58 @@
 import chalk from "chalk";
 import OpenAI from "openai";
+import { updateScratchpad } from "./helpers/updateScratchpad.js";
+import path from "path"; // Fix: Use standard path, not win32 specific
 
 const client = new OpenAI({
     baseURL: 'http://localhost:1234/v1',
     apiKey: 'not-needed',
 });
 
-
 export async function runReviewerAgent(
     filePath: string,
     proposedCode: string,
     originalCode: string,
-    evidence: string
+    evidence: string,
+    contract: any // Add this to allow the auditor to check against invariants
 ): Promise<{ approved: boolean; feedback?: string }> {
     console.log(chalk.magenta(`  🔍 Auditor: Analyzing proposed changes for ${filePath}...`));
+
+    // Determine if we are auditing a test file or a source file
+    const isTestFile = filePath.includes('test') || filePath.includes('spec');
 
     const response = await client.chat.completions.create({
         model: process.env.LMSTUDIO_MODEL_NAME || 'openai/gpt-oss-20b',
         messages: [
             {
                 role: 'system',
-                content: `You are a Senior DevSecOps Auditor. Your goal is to ensure security improvements do not break system functionality.
+                content: `You are a Senior DevSecOps Auditor. 
+                
+                CURRENT FILE BEING AUDITED: ${filePath}
+                FILE TYPE: ${isTestFile ? 'TEST SUITE' : 'SOURCE CODE'}
 
-            CRITERIA FOR APPROVAL (Must pass all):
-            1. SECURITY DELTA: The PROPOSED code must be objectively more secure than the ORIGINAL (e.g., replacing hardcoded strings with environment variables is a SUCCESS).
-            2. FUNCTIONAL PARITY: All public exports, functions, and core business logic from the ORIGINAL must exist in the PROPOSED code. Do not accept partial snippets.
-            3. MODULE STANDARDS: Must use ESM 'import/export'. No 'require'.
-            4. STABILITY: Environment variables must be checked for existence before use (e.g., throwing a clear error if a variable is missing).
+                ${!isTestFile ? `
+                STRICT SOURCE CODE RULES:
+                1. SECURITY: Must be more secure (e.g., no hardcoded secrets).
+                2. PARITY: Must maintain all original exports and core business logic.
+                3. CONTRACT INVARIANTS: 
+                   ${JSON.stringify(contract.functional_invariants, null, 2)}
+                ` : `
+                TEST SUITE RULES:
+                1. VALIDATION: Ensure the test now correctly supports the security changes (e.g., providing required ENV variables).
+                2. COVERAGE: Do not allow tests to be deleted; they must be updated to pass with the new secure implementation.
+                `}
 
-            CRITERIA FOR REJECTION:
-            - If the agent "hallucinates" new dependencies not found in the original imports.
-            - If the agent simplifies the logic so much that it loses original features.
-            - If the agent introduces hardcoded fallback values (e.g., const secret = process.env.KEY || 'default').
+                CRITERIA FOR ALL FILES:
+                - STANDARDS: Use ESM imports with '.js' extensions.
+                - NO FALLBACKS: Hard errors for missing environment variables.
 
-            Format your response as:
-            RESULT: [APPROVED/REJECTED]
-            REASON: [Technical explanation of the delta]`
+                Format your response EXACTLY as:
+                RESULT: [APPROVED or REJECTED]
+                REASON: [Technical explanation]`
             },
             {
                 role: 'user',
-                content: `EVIDENCE (Test Failures):\n${evidence}\n\nORIGINAL CODE:\n${originalCode}\n\nPROPOSED CODE:\n${proposedCode}`
+                content: `EVIDENCE (Context/Errors):\n${evidence}\n\nORIGINAL CODE:\n${originalCode}\n\nPROPOSED CODE:\n${proposedCode}`
             }
         ]
     });
@@ -47,7 +60,16 @@ export async function runReviewerAgent(
     const content = response.choices[0].message.content || "";
     const isApproved = content.includes("RESULT: APPROVED");
 
-    console.log(chalk.magentaBright(`     Auditor Feedback: ${content.split('\n')[1] || content}`));
+    await updateScratchpad(`
+        ## 🔍 AUDITOR REVIEW LOG [${new Date().toLocaleTimeString()}]
+        **File:** ${filePath}
+        **Verdict:** ${isApproved ? '✅ APPROVED' : '❌ REJECTED'}
+        **Full Audit Reasoning:**
+        ${content}
+        ---
+    `);
+
+    console.log(chalk.magentaBright(`     Auditor Feedback: ${content.split('\n').find(l => l.startsWith('REASON:')) || 'No reason provided.'}`));
 
     return {
         approved: isApproved,
