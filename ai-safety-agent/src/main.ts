@@ -1,7 +1,8 @@
 import chalk from "chalk";
-import { rollbackToSafety, runSmartRemediator } from "./agent.js";
+import { runSmartRemediator } from "./agent.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { rollbackToSafety } from "./helpers/rollbackToSafety.js";
 
 async function main() {
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
