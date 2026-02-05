@@ -43,10 +43,10 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
   const contract = await runDefinition(targetFile, initialCode, errorLog);
 
   console.log(chalk.green(`  ✅ Step 1: Definition Complete. Contract established.`));
-  console.log(chalk.magenta.bold(`\n─── REMEDIATION CONTRACT: ${targetFile} ───`));
 
+  // Terminal UI for Contract display
   const display = (label: string, items: any, color: Function) => {
-    console.log(color(`\n${label}:`));
+    console.log(color(`\n─── ${label} ───`));
     if (Array.isArray(items)) {
       items.forEach(i => console.log(chalk.white(`• ${i}`)));
     } else {
@@ -58,7 +58,6 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
   display("CHANGES", contract.required_changes, chalk.cyan);
   display("INVARIANTS", contract.functional_invariants, chalk.green);
 
-  console.log(chalk.magenta(`\n${"─".repeat(targetFile.length + 30)}\n`));
   const backupFileName = `${path.basename(targetFile)}.bak`;
   const backupPath = path.resolve(backupDir, backupFileName);
   await fs.writeFile(backupPath, initialCode, 'utf8');
@@ -66,35 +65,51 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
   const initialLog = `# Remediation Log: ${targetFile}\n\n## Initial Error\n\`\`\`\n${errorLog}\n\`\`\`\n---\n`;
   await fs.writeFile(scratchPath, initialLog, 'utf8');
 
+  // Updated System Prompt: Focuses on Multi-Agent Orchestration and Tool Protocol
   const systemPrompt: OpenAI.Chat.Completions.ChatCompletionMessageParam = {
     role: 'system',
-    content: `You are a Senior DevSecOps Remediation Agent. 
-Your logic, technical standards, and success criteria are strictly governed by the following REMEDIATION CONTRACT:
+    content: `You are a Senior Security Orchestrator. 
+Your goal is to remediate vulnerabilities defined in the provided CONTRACT while maintaining functional integrity.
 
-${JSON.stringify(contract, null, 2)}
+### MANDATORY COORDINATION WORKFLOW:
+1. DISCOVERY: Map the module dependencies using 'api_directory_helper' and read relevant source/test files.
+2. SOURCE FIX: Call 'propose_fix' for the logic changes.
+3. TEST SYNCHRONIZATION: Once the source fix is APPROVED, call 'generate_tests'. Pass your approved code to the Testing Agent to create a matching validation suite.
+4. TEST PROPOSAL: Call 'propose_fix' for the test file using the code provided by the Testing Agent.
+5. ATOMIC EXECUTION: Call 'write_fix' only after BOTH the source logic and the test logic have been APPROVED.
 
-MANDATORY WORKFLOW:
-1. ANALYZE: Use 'api_directory_helper' and 'read_file' to understand dependencies and related test files.
-2. PROPOSE: You MUST call 'propose_fix' and receive an "APPROVED" response before applying any changes.
-3. EXECUTE: Call 'write_fix' only after receiving "APPROVED".
+### CORE OPERATING RULES:
+1. NO HARDCODED LOGIC: Do not store specific implementation details in your prompt memory; rely on tool outputs.
+2. MIGRATION TOLERANCE: Do not be discouraged by partial test failures. If 'write_fix' fails validation, analyze the 'latestError' (e.g., missing environment variables or mismatched hashes) and patch the remaining files.
+3. MODULE STANDARDS: Strictly use ESM syntax (import/export) and include '.js' extensions in all local paths.
+4. INTERFACE PARITY: Preserve original function signatures and exports unless the contract demands a breaking change.
+5. RECOVERY: If stuck in a loop, use 'get_knowledge' to retrieve remediation patterns.
 
-CORE OPERATING RULES:
-1. CONTRACT ADHERENCE: Follow 'required_changes' and 'functional_invariants' exactly.
-2. SCOPE & TEST ALIGNMENT: Your primary target is ${targetFile}, but you are REQUIRED to update related test files if your security changes cause tests to fail. Do not ignore test failures; fix the tests to match the new secure logic.
-3. MODULE STANDARDS: Strictly use ESM 'import/export' with '.js' extensions.
-4. NO FALLBACKS: Throw hard errors for missing environment variables.
-5. RECOVERY PROTOCOL: If 'write_fix' fails validation or 'propose_fix' is rejected twice, call 'get_knowledge' with 'remediation examples'.
-6. FULL FILE WRITES: No placeholders or comments like "// rest of code here".
-7. NO HALLUCINATIONS: Only react to actual tool output provided by the system.`
+### HANDLING VALIDATION FAILURES:
+If 'write_fix' returns VALIDATION_FAILED, perform these steps:
+1. READ: Examine the "TEST OUTPUT" in the tool result.
+2. DIAGNOSE:
+   - Is it a Syntax/ESM error? Fix the file mentioned.
+   - Is it a 'Module not found' error? Check if the missing file is a dependency you intentionally introduced in your code, or if the Testing Agent hallucinated a file path in the test suite. Ensure the implementation and the tests are using the same directory structure.
+   - Is it a Test failure? Use 'generate_tests' again, providing the latest error so the Testing Agent can fix its logic.
+3. RECTIFY: Propose and write the missing or corrected files.
+
+### CRITICAL EXECUTION RULE:
+- Every file you 'propose_fix' for MUST eventually be applied via 'write_fix' once approved.
+- If you have an approved fix for a SOURCE file and an approved fix for a TEST file, you must call 'write_fix' for BOTH files sequentially.
+- Validation (npm test) only works if the code on disk matches your proposals. If you only write the source code but leave the old tests on disk, validation WILL fail.
+
+Current Target: ${targetFile}
+Contract: ${JSON.stringify(contract, null, 2)}`
   };
 
   let messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     systemPrompt,
-    { role: 'user', content: `TASK: Remediate ${targetFile} based on the contract.` }
+    { role: 'user', content: `Begin remediation of ${targetFile}. Current system error state: ${latestError}` }
   ];
 
   try {
-    for (let step = 0; step < 25; step++) {
+    for (let step = 0; step < 30; step++) {
       console.log(chalk.blue.bold(`\n🔄 Remediation Step [${step + 1}]`));
 
       const response = await client.chat.completions.create({
@@ -113,11 +128,6 @@ CORE OPERATING RULES:
       }
 
       if (!message.tool_calls || message.tool_calls.length === 0) {
-        const wasApproved = messages.some(m => m.role === 'tool' && m.content.includes('APPROVED'));
-        const nudgeMessage = wasApproved
-          ? "The fix was APPROVED. You must now call 'write_fix' to apply the changes."
-          : "Please proceed with the next step using the available tools.";
-        messages.push({ role: 'user', content: `SYSTEM: ${nudgeMessage}` });
         continue;
       }
 
@@ -132,26 +142,36 @@ CORE OPERATING RULES:
             apiRoot,
             agentRoot,
             initialCode,
-            latestError,
+            latestError, // Pass the persisting error context
             contract,
             messages
           });
 
+          // Persistent update of the error state for the next LLM turn
           latestError = updatedError;
-
-          if (result.includes("VALIDATION_FAILED")) {
-            messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
-            messages.push({
-              role: 'user',
-              content: `SYSTEM: Validation failed. If the failure is in the TEST suite (e.g., missing ENV variables like JWT_SECRET), do NOT rewrite the service file. Instead, use 'api_directory_helper' to find the test file, read it, and propose a fix for the TEST suite to support the new secure logic.`
-            });
-            continue;
-          }
 
           messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
 
+          if (result.includes("FILE_NOT_FOUND")) {
+            messages.push({
+              role: 'user',
+              content: `ADVISORY: The file '${args.path}' does not exist. Cross-reference the PROJECT MAP via 'api_directory_helper' to find the correct existing path. Do not attempt to import this non-existent path.`
+            });
+          }
+
+          // If validation failed, nudge the agent with the specific error and its next task
+          if (result.includes("VALIDATION_FAILED")) {
+            messages.push({
+              role: 'user',
+              content: `SYSTEM: Validation failed. 
+        IMPORTANT: I noticed the tests are still failing with syntax or environment errors. 
+        Did you forget to call 'write_fix' for the TEST file? 
+        You must write the APPROVED test code to disk so that 'npm test' can see it.`
+            });
+          }
+
           if (status === 'COMPLETE') {
-            console.log(chalk.green.bold(`🎉 Remediation Successful! Changes are live.`));
+            console.log(chalk.green.bold(`🎉 Remediation Successful! Changes are live and verified.`));
             return `SUCCESS: ${targetFile} verified.`;
           }
         } catch (err: any) {
@@ -161,7 +181,7 @@ CORE OPERATING RULES:
         }
       }
     }
-    return "Remediation failed after max steps.";
+    return "Remediation failed: Maximum orchestration steps reached.";
   } finally {
     console.log(chalk.yellow.bold(`\n🔒 System Shutdown: Cleaning up session...`));
   }
