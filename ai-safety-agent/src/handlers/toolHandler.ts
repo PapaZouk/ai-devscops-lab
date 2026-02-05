@@ -115,6 +115,7 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
                     const out = (e.stdout?.toString() || "") + (e.stderr?.toString() || "");
                     latestError = out;
                     result = `VALIDATION_FAILED: ${args.path}\n\n${out.slice(-800)}`;
+                    console.log(chalk.red.dim(out));
                     console.log(chalk.red(`     ❌ Validation Failed.`));
                 }
             }
@@ -126,7 +127,7 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
             const currentApiMap = JSON.parse(mapRaw);
 
             const moduleEntry = Object.values(currentApiMap).find((m: any) =>
-                m.logic?.includes(args.path) || (m.logic && args.path.includes(m.logic.replace('./', '')))
+                m?.logic?.includes(args.path) || (m?.logic && args.path.includes(m.logic.replace('./', '')))
             ) as any;
 
             const targetTestPath = moduleEntry?.tests || `tests/${path.basename(args.path).replace(/\.test\.ts$|\.ts$/, '')}.test.ts`;
@@ -136,7 +137,7 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
                 args.implementationCode,
                 contract,
                 latestError,
-                JSON.stringify(moduleEntry)
+                JSON.stringify(moduleEntry || { info: "Module context unavailable" })
             );
 
             result = `TARGET_PATH: ${targetTestPath}\n\n${testCode}`;
