@@ -9,7 +9,7 @@ import { handleReadFile } from "./tools/readFile.js";
 import { handleListFiles } from "./tools/listFiles.js";
 import { handleRunCommand } from "./tools/run_command.js";
 
-const PROJECT_ROOT = process.env.API_ROOT || process.cwd();
+const PROJECT_ROOT = process.env.API_ROOT || process.env.CWD || process.cwd();
 
 const server = new McpServer({
     name: 'security-remediation-server',
