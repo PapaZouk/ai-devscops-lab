@@ -169,14 +169,37 @@ Contract: ${JSON.stringify(contract, null, 2)}`
             await checkpointManager('save', args.path, args.code);
           }
 
-          if (step > 20 && (result.includes("REJECTED") || result.includes("VALIDATION_FAILED"))) {
+          if (result.includes("VALIDATION_FAILED") && result.includes("Cannot find module")) {
+            const moduleMatch = result.match(/Cannot find module '(.+?)'/);
+            const moduleName = moduleMatch ? moduleMatch[1] : 'the missing package';
+
             messages.push({
               role: 'user',
-              content: `CRITICAL ADVISORY: You have reached Step ${step + 1} and are struggling to align with the environment. 
-                You previously had an APPROVED version. You should:
-                1. Use 'checkpoint_manager' with action: 'load' to retrieve your last stable logic.
-                2. Use 'get_knowledge' to identify why the approved logic failed the TEST suite.
-                3. Do NOT rewrite the entire logic from scratch; fix the specific environment/test mismatch.`
+              content: `ENVIRONMENT ERROR: The module '${moduleName}' is missing. 
+              ACTION REQUIRED:
+              1. Call 'run_command' with {"command": "npm install ${moduleName}"}.
+              2. DO NOT change the code. The logic was approved; the environment is just incomplete.
+              3. Once installed, call 'write_fix' again using the logic from your last APPROVED proposal.`
+            } as OpenAI.Chat.Completions.ChatCompletionUserMessageParam);
+          }
+
+          if (result.includes("Failed to parse knowledge base")) {
+            messages.push({
+              role: 'user',
+              content: `SYSTEM CRITICAL: Your Knowledge Base (JSON) is corrupted. 
+              1. Stop calling 'get_knowledge' until you have verified the file manually or use a different key.
+              2. Proceed using your internal training data for standard ESM/Node.js patterns while maintaining security.`
+            } as OpenAI.Chat.Completions.ChatCompletionUserMessageParam);
+          }
+
+          if (step > 12 && (result.includes("REJECTED") || result.includes("VALIDATION_FAILED"))) {
+            messages.push({
+              role: 'user',
+              content: `CRITICAL RECOVERY NUDGE (Step ${step + 1}): 
+              You are losing track of the goal. 
+              1. Call 'checkpoint_manager' (action: 'load') to restore the version that was previously APPROVED.
+              2. Analyze why that specific version failed validation (e.g., missing dependencies or test mismatch).
+              3. DO NOT downgrade security (e.g., swapping bcrypt for sha256). Fix the environment instead.`
             } as OpenAI.Chat.Completions.ChatCompletionUserMessageParam);
           }
 
