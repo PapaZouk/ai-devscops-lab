@@ -38,6 +38,7 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
     console.log(chalk.red(`  ⚠️ Discovery Warning: ${err.message}`));
   }
 
+  // Clear previous session memory
   if (fsSync.existsSync(memoryDir)) await fs.rm(memoryDir, { recursive: true, force: true });
   await ensureDir(backupDir);
 
@@ -68,17 +69,21 @@ export async function runSmartRemediator(targetFile: string, errorLog: string, a
 
   const systemPrompt: OpenAI.Chat.Completions.ChatCompletionMessageParam = {
     role: 'system',
-    content: `You are a Senior Security Orchestrator. 
-Your goal is to remediate vulnerabilities defined in the provided CONTRACT while maintaining functional integrity.
+    content: `You are a Senior TypeScript Security Architect.
+Your goal is to remediate vulnerabilities defined in the CONTRACT while maintaining functional integrity.
 
-### THE SOURCE OF TRUTH (KNOWLEDGE BASE):
-- Before implementing security patterns, you MUST call 'get_knowledge'.
-- You are forbidden from guessing library syntax.
+### MANDATORY TYPESCRIPT RULES:
+1. **EXTENSIONS:** Use ONLY '.ts' extensions. NEVER use '.js' in code or filenames.
+2. **IMPORTS:** Ensure all imports are valid TypeScript/ESM. No guessing.
+3. **SYNTAX:** Use modern TypeScript. Do not include type annotations if the environment is strictly JS-runtime, but the file MUST be saved as .ts.
 
-### TOOL SELECTION HEURISTICS:
-- **Environment Errors:** For "Module Not Found" errors, call 'run_command' for npm installs. DO NOT modify code to remove the dependency.
-- **Protocol:** Use 'propose_fix' for logic. Only use 'write_fix' after receiving an 'APPROVED' status.
-- **Recovery:** Use 'checkpoint_manager' to 'load' a previously APPROVED state if you get stuck.
+### WORKFLOW GATES (STRICT ENFORCEMENT):
+- **Knowledge First:** Before implementing any fix, you MUST call 'get_knowledge' to retrieve verified security patterns.
+- **Verification Gate:** You are FORBIDDEN from concluding remediation until you have called 'generate_tests' and successfully verified the fix with a test suite.
+- **Recovery:** If a fix fails validation (tests fail), do not ignore it. Fix the code or the test suite. If looping, use 'checkpoint_manager' to 'load' the last APPROVED state.
+
+### DYNAMIC DEPENDENCY MANAGEMENT:
+- If 'write_fix' fails with "Module Not Found", identify the missing package, call 'run_command' to install it, and re-attempt the write.
 
 Current Target: ${targetFile}
 Contract: ${JSON.stringify(contract, null, 2)}`
@@ -102,18 +107,14 @@ Contract: ${JSON.stringify(contract, null, 2)}`
 
       const message = response.choices[0].message;
 
-      // --- TOKEN LEAKAGE PROTECTION ---
+      // Protection against internal token leakage
       if (message.content?.includes('<|channel|>')) {
-        console.log(chalk.red(`  ⚠️ Detected Model Fizzle (Internal Tokens). Triggering Reset...`));
-        messages.push({ role: 'user', content: "SYSTEM: You are outputting internal control tokens. Please return to standard JSON tool calling format immediately." });
+        messages.push({ role: 'user', content: "SYSTEM: Internal token leakage detected. Please return to standard JSON tool calling format." });
         continue;
       }
 
       const estimatedTokens = estimateTokenCount(messages);
-      const remainingPercent = Math.max(0, 100 - (estimatedTokens / 131072 * 100));
-
-      // IMPORTANT LOG: Context Monitoring
-      console.log(chalk.magenta(`  📊 Context Monitor: ~${Math.round(estimatedTokens)} tokens used (${remainingPercent.toFixed(1)}% remaining)`));
+      console.log(chalk.magenta(`  📊 Context Monitor: ~${Math.round(estimatedTokens)} tokens used (~${Math.max(0, 100 - (estimatedTokens / 131072 * 100)).toFixed(1)}% remaining)`));
 
       messages.push(message);
 
@@ -130,7 +131,6 @@ Contract: ${JSON.stringify(contract, null, 2)}`
         const { name, arguments: argsString } = toolCall.function;
         const args = JSON.parse(argsString);
 
-        // IMPORTANT LOG: Tool Initialization
         console.log(chalk.cyan.bold(`\n  🛠️  TOOL: ${name}`));
 
         try {
@@ -141,48 +141,64 @@ Contract: ${JSON.stringify(contract, null, 2)}`
           latestError = updatedError || latestError;
           messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
 
-          // --- CONDITIONAL APPROVAL & RECOVERY LOGIC ---
+          // --- GENERALIZED LOGIC GATES ---
 
-          if (name === 'propose_fix') {
-            const isApproved = result.includes('APPROVED');
+          // 1. Checkpoint for Approved Logic
+          if (name === 'propose_fix' && result.includes('APPROVED')) {
             const isMinor = result.includes('SEVERITY: MINOR');
+            await checkpointManager('save', args.path, args.code);
+            console.log(chalk.green(`  💾 Auto-saving checkpoint for approved logic...`));
 
-            if (isApproved) {
-              console.log(chalk.green(`  💾 Auto-saving checkpoint for approved logic...`));
-              await checkpointManager('save', args.path, args.code);
-
-              if (isMinor) {
-                messages.push({
-                  role: 'user',
-                  content: `The Auditor APPROVED your fix but noted MINOR issues. Before calling 'write_fix', please address this: ${result.split('REASON:')[1]}`
-                } as OpenAI.Chat.Completions.ChatCompletionUserMessageParam);
-                continue;
-              }
+            if (isMinor) {
+              messages.push({ role: 'user', content: `The Auditor approved with MINOR feedback. Refine the code: ${result.split('REASON:')[1]}` });
+              continue;
             }
           }
 
-          // Handle Missing Modules (npm install fix)
+          // 2. TypeScript/ESM Enforcement
+          if (args.path && args.path.endsWith('.js')) {
+            messages.push({ role: 'user', content: "ERROR: You used a .js extension. Rename the file to .ts and ensure TypeScript syntax is used." });
+          }
+
+          // 3. Dynamic Dependency Installation
           if (result.includes("VALIDATION_FAILED") && result.includes("Cannot find module")) {
-            const moduleName = result.match(/module '(.+?)'/)?.[1] || "the package";
+            const pkg = result.match(/module '(.+?)'/)?.[1] || "the missing package";
             messages.push({
               role: 'user',
-              content: `ENVIRONMENT ERROR: Missing module '${moduleName}'. Call 'run_command' {"command": "npm install ${moduleName}"} then re-attempt 'write_fix'.`
-            } as OpenAI.Chat.Completions.ChatCompletionUserMessageParam);
+              content: `The module '${pkg}' is missing. Use 'run_command' to install it. Do not change the logic.`
+            });
           }
 
-          // Loop Breaking (Checkpoint Load)
-          const recentRejections = messages.slice(-10).filter(m => m.role === 'tool' && (m.content.includes("REJECTED") || m.content.includes("VALIDATION_FAILED"))).length;
-          if (recentRejections >= 2 || step > 15) {
+          // 4. Testing Gate Enforcement
+          if (name === 'write_fix' && !args.path.includes('.test.ts') && !args.path.includes('.spec.ts')) {
+            messages.push({ role: 'user', content: "Source updated. Now call 'generate_tests' to verify the fix before finishing." });
+          }
+
+          // 4.1 If they call 'write_fix' on a test file, enforce that it must be followed by a successful 'generate_tests' before allowing 'finish'.
+          if (name === 'write_fix' && status === 'SUCCESS') {
             messages.push({
               role: 'user',
-              content: `RECOVERY NUDGE: You are looping. Use 'checkpoint_manager' to 'load' the last APPROVED code.`
-            } as OpenAI.Chat.Completions.ChatCompletionUserMessageParam);
+              content: `File written. You MUST now call 'run_biome_check' for '${args.path}' to ensure no syntax or linting errors were introduced before proceeding to testing.`
+            });
           }
 
+          // 5. Loop Recovery
+          const recentFailures = messages.slice(-10).filter(m => m.role === 'tool' && (m.content.includes("REJECTED") || m.content.includes("VALIDATION_FAILED"))).length;
+          if (recentFailures >= 2) {
+            messages.push({ role: 'user', content: "You are stuck in a failure loop. Call 'checkpoint_manager' (action: 'load') to restore the last approved version." });
+          }
+
+          // 6. Verification check on Finish
           if (status === 'COMPLETE') {
-            console.log(chalk.green.bold(`🎉 Remediation Successful! Changes are live and verified.`));
+            const testsRun = messages.some(m => m.role === 'assistant' && m.tool_calls?.some(tc => tc.function.name === 'generate_tests'));
+            if (!testsRun) {
+              messages.push({ role: 'user', content: "You cannot finish. You must call 'generate_tests' and verify with a 'write_fix' for the test file first." });
+              continue;
+            }
+            console.log(chalk.green.bold(`🎉 Remediation Successful! verified via Test Specialist.`));
             return `SUCCESS: ${targetFile} verified.`;
           }
+
         } catch (err: any) {
           console.error(chalk.red(`     🚨 Execution Error: ${err.message}`));
           await rollbackToSafety(apiRoot);
