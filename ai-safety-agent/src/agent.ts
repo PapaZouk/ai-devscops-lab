@@ -2,36 +2,34 @@ import OpenAI from "openai";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import path from "path";
+import { fileURLToPath } from "url";
 
-/**
- * PURE MCP AGENT
- * Logic-free: Only bridges the LLM to the MCP Server.
- */
+// Fix for ESM __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-// 1. Setup the Brain (LM Studio)
 const lmStudio = new OpenAI({
   baseURL: "http://localhost:1234/v1",
-  apiKey: "not-needed",
+  apiKey: "lm-studio",
 });
 
-// 2. Setup the "Hands" (The MCP Server Connection)
-// We call the server as a separate process via stdio
+// Setup the Transport to talk to your MCP server
 const transport = new StdioClientTransport({
   command: "node",
+  // Ensure this points to your COMPILED mcp-security-server index.js
   args: [path.resolve(__dirname, "../../mcp-security-server/build/index.js")],
 });
 
 const mcpClient = new Client(
-  { name: "ai-safety-agent", version: "1.0.0" },
+  { name: "security-agent", version: "1.0.0" },
   { capabilities: {} }
 );
 
 async function runAgent() {
-  // Connect to the tool server
   await mcpClient.connect(transport);
   console.log("🔌 Connected to MCP Tool Server");
 
-  // Dynamically get tools from the server (No hardcoding!)
+  // 1. DYNAMICALLY get tools (No hardcoding logic!)
   const { tools } = await mcpClient.listTools();
   const toolDefinitions = tools.map(t => ({
     type: "function" as const,
@@ -45,7 +43,7 @@ async function runAgent() {
   let messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     {
       role: "system",
-      content: "You are an Autonomous Security Architect. Analyze code and fix vulnerabilities using tools."
+      content: "You are an Autonomous Security Architect. Use tools to analyze and fix code. You MUST provide a final summary when done."
     },
     {
       role: "user",
@@ -54,42 +52,57 @@ async function runAgent() {
   ];
 
   while (true) {
-    console.log("\n🧠 Thinking...");
+    console.log("\n🧠 AI is thinking...");
     const response = await lmStudio.chat.completions.create({
       model: "openai/gpt-oss-20b",
       messages,
       tools: toolDefinitions,
+      tool_choice: "auto"
     });
 
     const aiMessage = response.choices[0].message;
     messages.push(aiMessage);
 
+    // If AI is done and just talking
     if (!aiMessage.tool_calls) {
-      console.log("\n🏁 Final Response:", aiMessage.content);
+      console.log("\n🏁 Final Report:", aiMessage.content);
       break;
     }
 
+    // 2. DISPATCHER (Logic-free)
     for (const toolCall of aiMessage.tool_calls) {
-      console.log(`🛠️  Executing Tool: ${toolCall.function.name}`);
+      console.log(`🛠️  Executing: ${toolCall.function.name}(${toolCall.function.arguments})`);
 
-      // CALL THE ACTUAL MCP SERVER
-      const result = await mcpClient.callTool({
-        name: toolCall.function.name,
-        arguments: JSON.parse(toolCall.function.arguments),
-      });
+      try {
+        // We call the tool via the MCP client bridge
+        const result = await mcpClient.callTool({
+          name: toolCall.function.name,
+          arguments: JSON.parse(toolCall.function.arguments),
+        });
 
-      // Pass the REAL data back to the AI
-      const content = result.content[0].type === "text" ? result.content[0].text : "Success";
+        // 3. FEEDBACK (The most important part)
+        // We take the actual text from the tool and give it to the AI
+        const toolOutput = result.content.map(c => (c.type === 'text' ? c.text : '')).join('\n');
 
-      messages.push({
-        role: "tool",
-        tool_call_id: toolCall.id,
-        content: content,
-      });
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: toolOutput || "Success",
+        });
 
-      console.log(`📡 Feedback sent to AI (${content.length} chars)`);
+        console.log(`📡 Data sent to AI (${toolOutput.length} characters)`);
+      } catch (err: any) {
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: `Error: ${err.message}`,
+        });
+      }
     }
   }
 }
 
-runAgent().catch(console.error);
+runAgent().catch(err => {
+  console.error("❌ Agent failed:", err);
+  process.exit(1);
+});

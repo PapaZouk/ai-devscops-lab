@@ -1,0 +1,10 @@
+# build output
+dist/
+build/**/*
+
+*.js
+*.d.ts
+*.map
+
+# node modules
+node_modules/
