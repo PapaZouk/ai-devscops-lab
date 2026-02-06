@@ -7,11 +7,12 @@ const execPromise = promisify(exec);
 
 const ALLOWED_COMMANDS = [
     "npm run test",
+    "npm test",
     "npm run build",
-    "npx biome check",
-    "npx biome check --write",
-    "npx biome format",
-    "npm test"
+    "npm build",
+    "npx biome",
+    "npx jest",
+    "npx vitest"
 ];
 
 export async function handleRunCommand(
@@ -55,18 +56,20 @@ export async function handleRunCommand(
             isError: !!stderr
         };
     } catch (error: any) {
-        const errorMessage = error.stderr || error.message || "Unknown error";
+        const errorMessage = error.stdout || error.stderr || error.message || "Unknown error";
 
-        const stmt =
-            db.prepare(`
+        const stmt = db.prepare(`
             INSERT INTO audit_logs (file_path, action, status, biome_output) 
             VALUES (?, ?, ?, ?)
         `);
         stmt.run("SYSTEM", `EXEC: ${command}`, 'COMMAND_ERROR', errorMessage);
 
-        throw new McpError(
-            ErrorCode.InternalError,
-            `❌ Command execution failed: ${errorMessage}`
-        );
+        return {
+            content: [{
+                type: "text" as const,
+                text: `⚠️ The command ran, but the tests FAILED:\n\n${errorMessage}`
+            }],
+            isError: false // Tell MCP the TOOL worked fine, even if the CODE it ran didn't.
+        };
     }
 }
