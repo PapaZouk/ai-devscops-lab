@@ -12,7 +12,8 @@ const ALLOWED_COMMANDS = [
     "npm build",
     "npx biome",
     "npx jest",
-    "npx vitest"
+    "npx vitest",
+    "npm install",
 ];
 
 export async function handleRunCommand(

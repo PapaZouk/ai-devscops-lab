@@ -52,9 +52,13 @@ async function runAgent() {
       role: "system",
       // 3. Explicitly tell the AI where it is working to prevent confusion
       content: `You are an Autonomous Security Architect. 
-      Your working directory is fixed to the 'vulnerable-api-app' folder. 
-      Current target: ${TARGET_APP_PATH}.
-      Always assume paths are relative to this root.`
+      Your working directory is: ${TARGET_APP_PATH}.
+      
+      STRICT EXIT PROTOCOL:
+      1. Your goal is ONLY to fix the specified vulnerability.
+      2. As soon as you receive a "SUCCESS" from a tool and have no more critical changes, you MUST stop.
+      3. Do not explore the directory further after a successful fix unless requested.
+      4. End your final summary with: "TERMINATE_SESSION".`
     },
     {
       role: "user",
