@@ -6,6 +6,7 @@ import { getKnowledgeBase } from '../tools/getKnowledgeBase.js';
 import { runReviewerAgent } from '../reviewerAgent.js';
 import { updateScratchpad } from '../helpers/updateScratchpad.js';
 import { runTestingAgent } from '../testingAgent.js';
+import { checkpointManager } from '../tools/checkpointManager.js';
 
 interface ToolContext {
     apiRoot: string;
@@ -42,6 +43,11 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
         case 'get_knowledge':
             result = await getKnowledgeBase(args.query || args.path || "security");
             console.log(chalk.cyan(`     ✅ Knowledge retrieved.`));
+            break;
+
+        case 'checkpoint_manager':
+            result = await checkpointManager(args.action, args.path, args.content);
+            console.log(chalk.blue(`     💾 Checkpoint ${args.action === 'save' ? 'Saved' : 'Loaded'} for ${args.path}`));
             break;
 
         case 'api_directory_helper':

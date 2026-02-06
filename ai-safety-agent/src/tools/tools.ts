@@ -84,5 +84,31 @@ export const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                 required: ['command']
             }
         }
+    },
+    {
+        type: "function",
+        function: {
+            name: "checkpoint_manager",
+            description: "Saves or loads a 'Golden Version of code. Use this to persist an APPROVED fix before running tests, or to RECOVER a stable version if a subsequent modification fails.",
+            parameters: {
+                type: "object",
+                properties: {
+                    action: {
+                        type: "string",
+                        enum: ["save", "load"],
+                        description: "Whether to save the current code state or load the last saved checkpoint."
+                    },
+                    path: {
+                        type: "string",
+                        description: "The path of the file being managed (e.g., src/services/authService.ts)."
+                    },
+                    content: {
+                        type: "string",
+                        description: "The full source code content to save. (Required only for 'save' action)."
+                    }
+                },
+                required: ["action", "path"]
+            }
+        }
     }
 ];
