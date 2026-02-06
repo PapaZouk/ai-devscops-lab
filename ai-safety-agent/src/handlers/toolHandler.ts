@@ -209,32 +209,52 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
 
         // 7. QUALITY GATE: BIOME LINTING
         case 'run_biome_check': {
+            const fullPath = path.resolve(apiRoot, args.path);
             const diagnostics = await getBiomeDiagnostics(fullPath);
 
             if (!diagnostics || diagnostics.length === 0) {
+                // Fetch current content to "ground" the agent and prevent re-reads
+                const currentContent = await fs.readFile(fullPath, 'utf-8');
+                const lines = currentContent.split('\n');
+                const snapshot = lines.length > 10
+                    ? `${lines.slice(0, 5).join('\n')}\n... [TRUNCATED] ...\n${lines.slice(-5).join('\n')}`
+                    : currentContent;
+
                 result = `✅ STATUS: BIOME_PASSED
                     FILE: ${args.path}
+                    STATE: LOCKED & VERIFIED
 
-                    NEXT STEP:
-                    - If this was a SOURCE file (.ts), call 'generate_tests' now.
-                    - If this was a TEST file (.test.ts), call 'run_command' with 'npm test'.`;
-                console.log(chalk.green(`     ✅ Biome passed: ${args.path}`));
+                    SUMMARY: The file is perfectly formatted and passes all security-lint rules.
+
+                    INTERNAL SNAPSHOT (Current State):
+                    ${snapshot}
+
+                    -----------------------------------------------------------------------
+                    🚀 DIRECTIVE: 
+                    1. The source code in '${args.path}' is now a "Ground Truth" artifact. 
+                    2. DO NOT call 'read_file' or 'propose_fix' for this file again.
+                    3. NEXT STEP: Call 'generate_tests' to validate these changes.
+                    4. Your focus MUST now shift entirely to the test suite.`;
+
+                console.log(chalk.green(`     ✅ Biome passed & State Locked: ${args.path}`));
             } else {
                 const hasFixable = diagnostics.some(d => d.code?.includes('format') || d.code?.includes('organizeImports'));
-                const summary = diagnostics.map(d => `• [${d.code}] ${d.message}`).join('\n');
+                const summary = diagnostics.slice(0, 5).map(d => `• [${d.code}] ${d.message}`).join('\n');
 
                 result = `❌ STATUS: BIOME_FAILED
                     FILE: ${args.path}
+                    STATE: DIRTY (NEEDS REPAIR)
 
-                    ISSUES:
+                    ISSUES DETECTED:
                     ${summary}
+                    ${diagnostics.length > 5 ? `...and ${diagnostics.length - 5} more issues.` : ''}
 
                     ${hasFixable ? `💡 AUTO-FIX AVAILABLE:
-                    Run 'run_command' with: "npx @biomejs/biome check --write ${args.path}" to fix these formatting issues automatically.` : ''}
+                    Run 'run_command' with: "npx @biomejs/biome check --write ${args.path}" to fix formatting and imports automatically.` : ''}
 
-                    REQUIRED ACTION: Repair logic or use the auto-fix command above, then re-run 'run_biome_check'.`;
+                    REQUIRED ACTION: You must resolve these issues. Use the auto-fix command if available, then YOU MUST RE-RUN 'run_biome_check'.`;
 
-                console.log(chalk.red(`     ❌ Biome failed for ${args.path}`));
+                console.log(chalk.red(`     ❌ Biome failed: ${args.path}`));
             }
             break;
         }
@@ -247,25 +267,29 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
                 m?.logic?.includes(args.path) || args.path.includes(m.logic?.replace('./', ''))
             ) as any;
 
-            const targetTestPath = moduleEntry?.tests || `tests/${path.basename(args.path).replace(/\.ts$/, '')}.test.ts`;
+            // Normalize path: Ensure no leading './' to prevent string mismatch in Safety Gate
+            let targetTestPath = moduleEntry?.tests || `tests/${path.basename(args.path).replace(/\.ts$/, '')}.test.ts`;
+            targetTestPath = targetTestPath.replace(/^\.\//, '');
+
             const testCode = await runTestingAgent(targetTestPath, args.implementationCode, contract, latestError, JSON.stringify(moduleEntry || {}));
 
-            // Inside handleToolCall.ts -> case 'generate_tests'
             result = `✅ STATUS: TESTS_GENERATED
-            IMPORTANT: This test MUST be saved to the standard testing directory.
+                TARGET_PATH: ${targetTestPath} 
 
-            TARGET_PATH: ${targetTestPath} 
+                --- CODE START ---
+                ${testCode}
+                --- CODE END ---
 
-            --- CODE START ---
-            ${testCode}
-            --- CODE END ---
+                CRITICAL NEXT STEPS:
+                1. Call 'propose_fix' with:
+                - path: "${targetTestPath}"
+                - code: (The code provided above)
+                2. Once APPROVED, call 'write_fix' for the same path.
+                3. Call 'run_biome_check' on "${targetTestPath}".
+                4. Call 'run_command' with "npm test".
 
-            NEXT STEPS:
-            1. Call 'propose_fix' for the EXACT path: '${targetTestPath}'.
-            2. Call 'write_fix' for the EXACT path: '${targetTestPath}'.
-            DO NOT save this file in the 'src/' directory. Use the 'tests/' directory identified above.
-                3. After writing, call 'run_biome_check' on the test file before running tests.
-                4. Finally, run 'npm test' via 'run_command' to verify the fix.`;
+                🛑 STOP: Do not read more files or research. Complete the write/test loop now.`;
+
             console.log(chalk.green(`     ✅ Test suite generated for ${targetTestPath}`));
             break;
         }
@@ -273,52 +297,93 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
         // 9. COMMAND EXECUTION (Dependency/Test Runner)
         case 'run_command': {
             const cmd = args.command;
-            const allowedPrefixes = ['npm install', 'npm list', 'npm test', 'npx @biomejs', 'ls'];
+            const allowedPrefixes = ['npm install', 'npm list', 'npm test', 'npx @biomejs', 'ls', 'npm run'];
+
             if (!allowedPrefixes.some(p => cmd.startsWith(p))) {
-                return { status: 'FAILED', result: 'REJECTED: Restricted command.' };
+                result = `❌ REJECTED: Command '${cmd}' is restricted for security. Only npm/npx/ls commands are allowed.`;
+                return { status: 'CONTINUE', result, latestError: 'Restricted Command' };
             }
 
             try {
                 const { stdout, stderr } = await execPromise(cmd, { cwd: apiRoot });
-                result = `Command Executed: ${cmd}\nSTDOUT: ${stdout}\nSTDERR: ${stderr}`;
+
+                // Success path
+                const isTest = cmd.includes('npm test');
+                result = `✅ COMMAND SUCCESS: ${cmd}
+                    STDOUT:
+                    ${stdout}
+
+                    ${isTest ? '🎉 STATUS: TESTS_PASSED. If all security goals are met, you are finished.' : 'NEXT: Proceed with the remediation sequence.'}`;
+
                 console.log(chalk.green(`     ✅ Command Success: ${cmd}`));
             } catch (err: any) {
-                result = `Execution Error: ${err.message}`;
-                console.log(chalk.red(`     ❌ Command Failed.`));
+                const stdout = err.stdout || "";
+                const stderr = err.stderr || "";
+
+                // Smart Error Diagnosis (Logic in code, not prompt)
+                const isMissingDep = stderr.includes('Cannot find module') || stdout.includes('Cannot find module');
+                const isAuthError = stderr.includes('JWT_SECRET') || stdout.includes('JWT_SECRET');
+
+                result = `❌ COMMAND FAILED: ${cmd}
+                    ERROR SUMMARY:
+                    ${stderr || err.message}
+
+                    ${isMissingDep ? "💡 DIAGNOSIS: A dependency or file is missing. Check your imports and 'package.json'." : ""}
+                    ${isAuthError ? "💡 DIAGNOSIS: Environment variable JWT_SECRET is missing. Ensure the test setup mocks process.env." : ""}
+
+                    REQUIRED ACTION: Fix the error above and re-run the command. Do not ignore failing tests.`;
+
+                console.log(chalk.red(`     ❌ Command Failed: ${cmd}`));
             }
             break;
         }
 
         // 10. STATUS CHECKER
         case 'get_status': {
-            const targetPath = path.resolve(apiRoot, args.path);
+            const absoluteTargetPath = path.resolve(apiRoot, args.path);
+            const fileName = path.basename(args.path);
 
-            // Filter messages relevant to this specific path
-            const relevantTools = messages.filter(m =>
-                m.role === 'tool' &&
-                (m.content?.includes(args.path) || m.content?.includes(path.basename(args.path)))
-            );
+            // Filter messages with robust path matching
+            const relevantTools = messages.filter(m => {
+                if (m.role !== 'tool' || !m.content) return false;
+                // Match by full path, relative path, or just filename to be safe
+                return m.content.includes(args.path) || m.content.includes(fileName);
+            });
 
-            const hasApproval = relevantTools.some(m => m.content?.startsWith('APPROVED:'));
-            const isWritten = relevantTools.some(m => m.content?.includes('FILE_SAVED') || m.content?.includes('FILE_WRITTEN'));
+            // Logic gates based on tool output markers
+            const hasApproval = relevantTools.some(m => m.content?.includes('APPROVED:'));
+            const isWritten = relevantTools.some(m => m.content?.includes('FILE_WRITTEN'));
             const isLinted = relevantTools.some(m => m.content?.includes('BIOME_PASSED'));
             const hasTests = relevantTools.some(m => m.content?.includes('TESTS_GENERATED'));
-            const testsPassed = relevantTools.some(m => m.content?.includes('PASS') && m.content?.toLowerCase().includes('test'));
+            const testsPassed = relevantTools.some(m => m.content?.includes('TESTS_PASSED') || (m.content?.includes('PASS') && m.content?.toLowerCase().includes('test')));
 
+            // Determine the single most important next step
+            let nextStep = "";
+            if (!hasApproval) {
+                nextStep = "Call 'propose_fix' to get the Auditor's approval for your changes.";
+            } else if (!isWritten) {
+                nextStep = "The code is APPROVED. You MUST now call 'write_fix' to save it to disk.";
+            } else if (!isLinted) {
+                nextStep = "The file is saved, but not verified. Call 'run_biome_check' immediately.";
+            } else if (!hasTests && !args.path.includes('.test.')) {
+                nextStep = "Source code is ready. Call 'generate_tests' to create the verification suite.";
+            } else if (!testsPassed) {
+                nextStep = "Code and tests are ready. Call 'run_command' with 'npm test' to finish.";
+            } else {
+                nextStep = "Remediation is complete and verified. Move to the next vulnerability or signal completion.";
+            }
+
+            // Flush-left output to save tokens and improve LLM readability
             result = `📊 STATUS REPORT: ${args.path}
-                - Approved: ${hasApproval ? '✅' : '❌'}
-                - Written to Disk: ${isWritten ? '✅' : '❌'}
-                - Biome/Lint Passed: ${isLinted ? '✅' : '❌'}
-                - Tests Generated: ${hasTests ? '✅' : '❌'}
-                - Tests Passed: ${testsPassed ? '✅' : '❌'}
+            - Approved: ${hasApproval ? '✅' : '❌'}
+            - Written to Disk: ${isWritten ? '✅' : '❌'}
+            - Biome/Lint Passed: ${isLinted ? '✅' : '❌'}
+            - Tests Generated: ${hasTests ? '✅' : '❌'}
+            - Tests Passed: ${testsPassed ? '✅' : '❌'}
 
-                NEXT RECOMMENDED STEP: ${!hasApproval ? 'propose_fix' :
-                    !isWritten ? 'write_fix' :
-                        !isLinted ? 'run_biome_check' :
-                            !hasTests ? 'generate_tests' :
-                                !testsPassed ? 'run_command (npm test)' : 'Remediation Complete.'
-                }
-                `;
+            🚀 REQUIRED ACTION: ${nextStep}
+
+            🛑 IMPORTANT: If you are already approved, do not research more. Execute the write/check sequence now.`;
 
             console.log(chalk.blue(`     📊 Status checked for ${args.path}`));
             break;
