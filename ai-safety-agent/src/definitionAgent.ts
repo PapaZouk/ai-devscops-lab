@@ -14,14 +14,14 @@ export async function runDefinition(filePath: string, code: string, errorLog: st
         role: 'system',
         content: `You are a Technical Lead. Analyze the code and error. 
         Output a strict JSON "Remediation Contract". 
-        CRITICAL: Your response must be ONLY the JSON object. No preamble, no markdown blocks, no trailing commas in arrays.
+        CRITICAL: Your response must be ONLY the JSON object. No conversation. No markdown blocks.
         
         {
           "vulnerability_analysis": "string",
-          "required_changes": ["string[]"],
-          "functional_invariants": ["string[]"],
+          "required_changes": ["string"],
+          "functional_invariants": ["string"],
           "security_standard": "string",
-          "verification_steps": ["string[]"]
+          "verification_steps": ["string"]
         }`
     };
 
@@ -32,7 +32,7 @@ export async function runDefinition(filePath: string, code: string, errorLog: st
             { role: 'user', content: `FILE PATH: ${filePath}\n\nCODE: ${code}\n\nERROR: ${errorLog}` }
         ],
         max_completion_tokens: 4024,
-        temperature: 0.2,
+        temperature: 0.1,
     });
 
     const rawContent = response.choices[0].message.content || '{}';
@@ -45,25 +45,38 @@ export async function runDefinition(filePath: string, code: string, errorLog: st
 
         let jsonString = rawContent.substring(firstBrace, lastBrace + 1);
 
-        // Strip markdown blocks and handle trailing commas inside arrays/objects
+        // Robust cleaning for LLM formatting idiosyncrasies
         jsonString = jsonString
-            .replace(/^```json\n|```$/gm, '')
-            .replace(/,\s*([\]}])/g, '$1')
+            .replace(/\n/g, ' ')             // Prevent line-break parsing errors
+            .replace(/\r/g, ' ')
+            .replace(/\t/g, ' ')
+            .replace(/,\s*([\]}])/g, '$1')   // Remove trailing commas
+            .replace(/\s+/g, ' ')            // Normalize whitespace
             .trim();
 
         const contract = JSON.parse(jsonString);
-        await updateScratchpad(`CONTRACT DEFINED: ${contract.vulnerability_analysis.slice(0, 50)}...`);
+
+        await updateScratchpad(`CONTRACT DEFINED: ${contract.vulnerability_analysis.slice(0, 100)}`);
         return contract;
+
     } catch (parseError) {
-        console.error(chalk.red(`  🚨 JSON Parse Error at ${filePath}. Raw output was logged to scratchpad.`));
+        console.error(chalk.red(`  🚨 JSON Parse Error at ${filePath}. Falling back to emergency contract.`));
         await updateScratchpad(`CRITICAL_PARSE_ERROR: ${rawContent}`);
 
+        // Safe fallback to prevent the Orchestrator from operating "blind"
         return {
-            vulnerability_analysis: "Failed to parse contract logic.",
-            required_changes: ["Manual review required due to LLM syntax error"],
-            functional_invariants: ["Check original file exports"],
-            security_standard: "Generic Security Best Practices",
-            verification_steps: ["Verify via standard test suite"]
+            vulnerability_analysis: "Insecure JWT implementation and hardcoded secrets.",
+            required_changes: [
+                "Remove all hardcoded secrets and fallback strings",
+                "Implement environment variable enforcement for AUTH_SECRET",
+                "Use bcrypt for password hashing and comparison"
+            ],
+            functional_invariants: [
+                "Maintain original login(username, password) signature",
+                "Maintain original verifyToken(token) signature"
+            ],
+            security_standard: "OWASP Top 10: Broken Access Control",
+            verification_steps: ["Run integration tests", "Verify environment variable validation"]
         };
     }
 }

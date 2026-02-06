@@ -2,3 +2,5 @@
 *.bak
 *.tmp
 *.md
+*.checkpoint
+*.log

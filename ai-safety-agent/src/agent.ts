@@ -12,6 +12,7 @@ import { updateScratchpad } from './helpers/updateScratchpad.js';
 import { rollbackToSafety } from './helpers/rollbackToSafety.js';
 import { handleToolCall } from './handlers/toolHandler.js';
 import { estimateTokenCount } from './utils/estimateTokenCount.js';
+import { checkpointManager } from './tools/checkpointManager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const agentRoot = path.resolve(__dirname, '..');
@@ -79,6 +80,7 @@ Your goal is to remediate vulnerabilities defined in the provided CONTRACT while
 - **Environment Errors:** For "Module Not Found" or "Export" errors, call 'get_knowledge' followed by 'run_command' for npm installs.
 - **Testing Requirements:** After every source 'write_fix', you MUST call 'generate_tests' to let the Testing Specialist align the suite.
 - **Protocol:** Use 'propose_fix' for logic. Only use 'write_fix' after receiving an 'APPROVED' status.
+- **Recovery:** If your proposed fix is REJECTED by the Auditor after previously being APPROVED, use 'checkpoint_manager' to retrieve the approved state and compare it against the current failure.
 
 ### MANDATORY COORDINATION WORKFLOW:
 1. **Discovery:** Map dependencies and read relevant source/test files.
@@ -159,8 +161,24 @@ Contract: ${JSON.stringify(contract, null, 2)}`
             messages
           });
 
-          latestError = updatedError;
+          latestError = updatedError || latestError;
           messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
+
+          if (name === 'propose_fix' && result.includes('APPROVED')) {
+            console.log(chalk.green(`  💾 Auto-saving checkpoint for approved logic...`));
+            await checkpointManager('save', args.path, args.code);
+          }
+
+          if (step > 20 && (result.includes("REJECTED") || result.includes("VALIDATION_FAILED"))) {
+            messages.push({
+              role: 'user',
+              content: `CRITICAL ADVISORY: You have reached Step ${step + 1} and are struggling to align with the environment. 
+                You previously had an APPROVED version. You should:
+                1. Use 'checkpoint_manager' with action: 'load' to retrieve your last stable logic.
+                2. Use 'get_knowledge' to identify why the approved logic failed the TEST suite.
+                3. Do NOT rewrite the entire logic from scratch; fix the specific environment/test mismatch.`
+            } as OpenAI.Chat.Completions.ChatCompletionUserMessageParam);
+          }
 
           // 1. GENERIC DEPENDENCY & EXPORT ALIGNMENT
           const isValidationError = result.includes("VALIDATION_FAILED");
