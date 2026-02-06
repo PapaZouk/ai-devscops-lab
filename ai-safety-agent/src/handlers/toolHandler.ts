@@ -1,6 +1,5 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { execSync } from 'child_process';
 import chalk from 'chalk';
 import { getKnowledgeBase } from '../tools/getKnowledgeBase.js';
 import { runReviewerAgent } from '../reviewerAgent.js';
@@ -8,6 +7,7 @@ import { updateScratchpad } from '../helpers/updateScratchpad.js';
 import { runTestingAgent } from '../testingAgent.js';
 import { checkpointManager } from '../tools/checkpointManager.js';
 import { getBiomeDiagnostics } from '../scanners/getBiomeDiagnostics.js';
+import { execPromise } from '../helpers/execPromise.js';
 
 interface ToolContext {
     apiRoot: string;
@@ -18,17 +18,18 @@ interface ToolContext {
     messages: any[];
 }
 
+
+
 export async function handleToolCall(name: string, args: any, context: ToolContext) {
     const { apiRoot, agentRoot, contract, messages } = context;
     let result = "";
     let latestError = context.latestError;
 
-    // PATH SANITIZATION LOGIC
+    // --- PATH RESOLUTION & SAFETY ---
     const rawPath = args.path || "";
     const isInternal = rawPath.startsWith('.agent_memory');
     const fullPath = isInternal ? path.resolve(agentRoot, rawPath) : path.resolve(apiRoot, rawPath);
 
-    // Verify path is within allowed roots
     if (!fullPath.startsWith(apiRoot) && !fullPath.startsWith(agentRoot)) {
         return { status: 'CONTINUE', result: "ERROR: Access denied. Path is outside project root.", latestError };
     }
@@ -36,62 +37,83 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
     const getApiMap = async () => {
         try {
             const mapPath = path.resolve(agentRoot, 'agent_knowledge/api_map.json');
-            return await fs.readFile(mapPath, 'utf8');
-        } catch { return "{}"; }
+            return JSON.parse(await fs.readFile(mapPath, 'utf8'));
+        } catch { return {}; }
     };
 
     switch (name) {
+        // 1. KNOWLEDGE RETRIEVAL
         case 'get_knowledge':
             result = await getKnowledgeBase(args.query || args.path || "security");
             console.log(chalk.cyan(`     ✅ Knowledge retrieved.`));
             break;
 
+        // 2. STATE MANAGEMENT (Checkpoints)
         case 'checkpoint_manager':
             result = await checkpointManager(args.action, args.path, args.content);
-            console.log(chalk.blue(`     💾 Checkpoint ${args.action === 'save' ? 'Saved' : 'Loaded'} for ${args.path}`));
+            console.log(chalk.blue(`     💾 Checkpoint ${args.action.toUpperCase()} for ${args.path}`));
             break;
 
-        case 'api_directory_helper':
-            const mapData = JSON.parse(await getApiMap());
-            const moduleKey = Object.keys(mapData).find(k => k.toLowerCase().includes(args.moduleName?.toLowerCase() || ""));
-            result = JSON.stringify(moduleKey ? mapData[moduleKey] : "Module not found.", null, 2);
-            console.log(moduleKey ? chalk.green(`     ✅ Context mapped.`) : chalk.red(`     ❌ Module missing.`));
+        // 3. PROJECT DISCOVERY (Fuzzy Mapping)
+        case 'api_directory_helper': {
+            const mapData = await getApiMap();
+            const query = args.moduleName?.toLowerCase() || "";
+
+            // Search keys, logic paths, and test paths for the query
+            const moduleKey = Object.keys(mapData).find(k =>
+                k.toLowerCase().includes(query) ||
+                JSON.stringify(mapData[k]).toLowerCase().includes(query)
+            );
+
+            if (moduleKey) {
+                result = JSON.stringify({ module: moduleKey, ...mapData[moduleKey] }, null, 2);
+                console.log(chalk.green(`     ✅ Context mapped: ${moduleKey}`));
+            } else {
+                const suggestions = Object.keys(mapData).slice(0, 5).join(', ');
+                result = `❌ Module '${args.moduleName}' not found. Available: ${suggestions}`;
+                console.log(chalk.red(`     ❌ Module missing.`));
+            }
             break;
-
-        case 'run_command': {
-            const cmd = args.command;
-            if (!cmd.startsWith('npm install') && !cmd.startsWith('npm list')) {
-                return { status: 'FAILED', result: 'REJECTED: Only npm install/list commands are allowed for safety.' };
-            }
-
-            try {
-                const { stdout, stderr } = await execPromise(cmd, { cwd: apiRoot });
-                return {
-                    status: 'SUCCESS',
-                    result: `Command Executed: ${cmd}\nSTDOUT: ${stdout}\nSTDERR: ${stderr}`
-                };
-            } catch (err: any) {
-                return { status: 'FAILED', result: `Execution Error: ${err.message}` };
-            }
         }
 
+        // 4. FILE SYSTEM: READ
         case 'read_file':
             try {
                 const stats = await fs.stat(fullPath);
                 if (stats.isDirectory()) {
-                    result = `DIRECTORY_ERROR: '${args.path}' is a directory.`;
+                    const files = await fs.readdir(fullPath);
+                    result = `DIRECTORY_LISTING [${args.path}]:\n${files.join('\n')}`;
                 } else {
                     const content = await fs.readFile(fullPath, 'utf-8');
                     result = `FILE_CONTENTS [${args.path}]:\n\n${content}`;
                     console.log(chalk.green(`     ✅ Read ${args.path}`));
                 }
             } catch (e: any) {
-                result = `FILE_NOT_FOUND: ${args.path} does not exist.`;
-                console.log(chalk.yellow(`     ⚠️  File missing: ${args.path}`));
+                result = `FILE_NOT_FOUND: ${args.path}`;
             }
             break;
 
-        case 'propose_fix':
+        // 5. SECURITY AUDIT GATE
+        case 'propose_fix': {
+            // 1. PATH VALIDATION (The "Front Desk" Check)
+            const isTestFile = args.path.includes('.test.');
+            const isWrongFolder = isTestFile && args.path.startsWith('src/');
+
+            if (isWrongFolder) {
+                result = `❌ REJECTED: PATH_MISPLACEMENT
+                PATH: ${args.path}
+                REASON: You are attempting to place a TEST file inside the 'src/' directory.
+                CRITICAL RULE: All test files must be located in the 'tests/' directory (e.g., 'tests/integration/authService.test.ts').
+
+                REQUIRED ACTION:
+                1. Identify the correct test path from 'api_map.json'.
+                2. Call 'propose_fix' again with the correct path.`;
+
+                console.log(chalk.red.bold(`     ⚠️ Auditor blocked misaligned path: ${args.path}`));
+                return { status: 'CONTINUE', result, latestError };
+            }
+
+            // 2. PROCEED TO AUDIT
             console.log(chalk.blue(`     🔍 Reviewer Agent: Auditing ${args.path}...`));
             let currentFileCode = "";
             try {
@@ -99,99 +121,194 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
             } catch {
                 currentFileCode = "// New file";
             }
+
             const audit = await runReviewerAgent(args.path, args.code, currentFileCode, latestError, contract);
-            result = audit.approved ? `APPROVED: ${args.path}` : `REJECTED: ${audit.feedback}`;
-            console.log(audit.approved ? chalk.green.bold(`     ✅ Approved ${args.path}`) : chalk.red.bold(`     ❌ Rejected.`));
-            break;
 
-        case 'write_fix':
-            const lastApproval = [...messages].reverse().find(m => {
-                if (m.role !== 'tool' || !m.content?.startsWith('APPROVED: ')) return false;
-                const approvedPath = m.content.replace('APPROVED: ', '').trim();
-                // Resolve both paths to absolute to ensure they match regardless of './'
-                return path.resolve(apiRoot, approvedPath) === path.resolve(apiRoot, args.path);
-            });
+            if (audit.approved) {
+                const type = isTestFile ? 'TEST_SUITE' : 'SOURCE_CODE';
+                result = `APPROVED: ${args.path}
+                FILE_TYPE: ${type}
 
-            if (!lastApproval) {
-                result = `REJECTED: ${args.path} not approved.`;
-                console.log(chalk.yellow.bold(`     ⚠️ Safety: Blocked write.`));
+                CRITICAL: This approval is ONLY for ${args.path}.
+                NEXT STEP: You must now call 'write_fix' for the EXACT path: '${args.path}'.
+                Do not attempt to write this code to any other file.`;
+
+                console.log(chalk.green.bold(`     ✅ Approved ${args.path}`));
             } else {
-                await fs.writeFile(fullPath, args.code, 'utf8');
-                console.log(chalk.yellow(`     💾 Saved ${args.path}. Validating...`));
-                try {
-                    try {
-                        execSync(`npx @biomejs/biome check --write ${fullPath}`, { cwd: apiRoot, stdio: 'pipe' });
-                    } catch { }
+                result = `REJECTED: ${audit.feedback}
 
-                    execSync('node --experimental-vm-modules node_modules/jest/bin/jest.js', {
-                        cwd: apiRoot,
-                        stdio: 'pipe',
-                        env: {
-                            ...process.env,
-                            NODE_ENV: 'test',
-                            NODE_OPTIONS: '--experimental-vm-modules --no-warnings'
-                        }
-                    });
+                REQUIRED ACTION: Fix the issues identified by the Auditor and call 'propose_fix' again.`;
 
-                    console.log(chalk.green.bold(`     ✅ SUCCESS: Tests passed.`));
-                    return { status: 'CONTINUE', result: `SUCCESS: ${args.path} verified.`, latestError: "" };
-                } catch (e: any) {
-                    const out = (e.stdout?.toString() || "") + (e.stderr?.toString() || "");
-                    latestError = out;
-                    result = `VALIDATION_FAILED: ${args.path}\n\n${out.slice(-800)}`;
-                    console.log(chalk.red.dim(out));
-                    console.log(chalk.red(`     ❌ Validation Failed.`));
-                }
+                console.log(chalk.red.bold(`     ❌ Rejected.`));
             }
             break;
+        }
 
-        case 'generate_tests':
-            console.log(chalk.magenta(`     🧪 Testing Agent: Generating suite...`));
-            const mapRaw = await getApiMap();
-            const currentApiMap = JSON.parse(mapRaw);
-
-            const moduleEntry = Object.values(currentApiMap).find((m: any) =>
-                m?.logic?.includes(args.path) || (m?.logic && args.path.includes(m.logic.replace('./', '')))
-            ) as any;
-
-            const targetTestPath = moduleEntry?.tests || `tests/${path.basename(args.path).replace(/\.test\.ts$|\.ts$/, '')}.test.ts`;
-
-            const testCode = await runTestingAgent(
-                targetTestPath,
-                args.implementationCode,
-                contract,
-                latestError,
-                JSON.stringify(moduleEntry || { info: "Module context unavailable" })
+        // 6. FILE SYSTEM: WRITE (Strict Approval Check)
+        case 'write_fix': {
+            const lastApprovalMessage = [...messages].reverse().find(m =>
+                m.role === 'tool' && m.content?.startsWith('APPROVED:')
             );
 
-            result = `TARGET_PATH: ${targetTestPath}\n\n${testCode}`;
+            let isApproved = false;
+            if (lastApprovalMessage) {
+                const approvedPathRaw = lastApprovalMessage.content.replace('APPROVED: ', '').split('\n')[0].trim();
+                const absoluteApprovedPath = path.resolve(apiRoot, approvedPathRaw);
+                const absoluteTargetPath = path.resolve(apiRoot, args.path);
+                isApproved = absoluteApprovedPath === absoluteTargetPath;
+            }
+
+            if (!isApproved) {
+                const lastPath = lastApprovalMessage?.content?.split('\n')[0] || "NONE";
+                result = `❌ ERROR: WRITE_BLOCKED
+                    PATH: ${args.path}
+                    REASON: This specific path has not been approved.
+                    LAST_APPROVAL: ${lastPath}
+
+                    REQUIRED ACTION:
+                    1. You are trying to write to a file that was not the last one approved.
+                    2. If you just generated tests, you MUST call 'propose_fix' for the test file before writing it.
+                    3. Call 'get_status' if you are confused about what is approved.`;
+
+                console.log(chalk.red.bold(`     ⚠️ Safety: Blocked write for ${args.path}.`));
+                return { status: 'CONTINUE', result, latestError };
+            }
+
+            try {
+                await fs.writeFile(fullPath, args.code, 'utf8');
+                result = `💾 STATUS: FILE_WRITTEN
+                    PATH: ${args.path}
+
+                    CRITICAL NEXT STEP:
+                    1. You MUST now call 'run_biome_check' on '${args.path}' immediately.
+                    2. The remediation is NOT complete until Biome passes. Do not summarize, just run the check.`;
+                console.log(chalk.yellow(`     💾 Saved ${args.path}.`));
+            } catch (error: any) {
+                result = `❌ ERROR: Failed to write to disk: ${error.message}`;
+                return { status: 'CONTINUE', result, latestError };
+            }
+            break;
+        }
+
+        // 7. QUALITY GATE: BIOME LINTING
+        case 'run_biome_check': {
+            const diagnostics = await getBiomeDiagnostics(fullPath);
+            if (!diagnostics || diagnostics.length === 0) {
+                result = `✅ STATUS: BIOME_PASSED
+                FILE: ${args.path}
+
+                NEXT MANDATORY STEP:
+                - If this is SOURCE code: Call 'generate_tests' now.
+                - If this is a TEST file: Call 'run_command' with 'npm test'.`;
+                console.log(chalk.green(`     ✅ Biome passed: ${args.path}`));
+            } else {
+                const summary = diagnostics.map(d => `• [${d.code}] ${d.message}`).join('\n');
+                result = `❌ STATUS: BIOME_FAILED
+                FILE: ${args.path}
+
+                ISSUES FOUND:
+                ${summary}
+
+                REQUIRED ACTION:
+                1. Fix the syntax/linting errors shown above.
+                2. Call 'write_fix' with corrected code.
+                3. Call 'run_biome_check' again.`;
+                console.log(chalk.red(`     ❌ Biome found ${diagnostics.length} issues.`));
+            }
+            break;
+        }
+
+        // 8. TEST GENERATION (Specialist Agent)
+        case 'generate_tests': {
+            console.log(chalk.magenta(`     🧪 Testing Agent: Generating suite...`));
+            const currentApiMap = await getApiMap();
+            const moduleEntry = Object.values(currentApiMap).find((m: any) =>
+                m?.logic?.includes(args.path) || args.path.includes(m.logic?.replace('./', ''))
+            ) as any;
+
+            const targetTestPath = moduleEntry?.tests || `tests/${path.basename(args.path).replace(/\.ts$/, '')}.test.ts`;
+            const testCode = await runTestingAgent(targetTestPath, args.implementationCode, contract, latestError, JSON.stringify(moduleEntry || {}));
+
+            // Inside handleToolCall.ts -> case 'generate_tests'
+            result = `✅ STATUS: TESTS_GENERATED
+            IMPORTANT: This test MUST be saved to the standard testing directory.
+
+            TARGET_PATH: ${targetTestPath} 
+
+            --- CODE START ---
+            ${testCode}
+            --- CODE END ---
+
+            NEXT STEPS:
+            1. Call 'propose_fix' for the EXACT path: '${targetTestPath}'.
+            2. Call 'write_fix' for the EXACT path: '${targetTestPath}'.
+            DO NOT save this file in the 'src/' directory. Use the 'tests/' directory identified above.
+                3. After writing, call 'run_biome_check' on the test file before running tests.
+                4. Finally, run 'npm test' via 'run_command' to verify the fix.`;
             console.log(chalk.green(`     ✅ Test suite generated for ${targetTestPath}`));
             break;
-
-        case 'run_biome_check': {
-            const diagnostics = await getBiomeDiagnostics(args.path);
-            if (!diagnostics) {
-                return { status: 'SUCCESS', result: "✅ Biome check passed: No linting or syntax issues found." };
-            }
-            return {
-                status: 'VALIDATION_FAILED',
-                result: `❌ Biome found issues:\n${JSON.stringify(diagnostics, null, 2)}`
-            };
         }
+
+        // 9. COMMAND EXECUTION (Dependency/Test Runner)
+        case 'run_command': {
+            const cmd = args.command;
+            const allowedPrefixes = ['npm install', 'npm list', 'npm test', 'npx @biomejs', 'ls'];
+            if (!allowedPrefixes.some(p => cmd.startsWith(p))) {
+                return { status: 'FAILED', result: 'REJECTED: Restricted command.' };
+            }
+
+            try {
+                const { stdout, stderr } = await execPromise(cmd, { cwd: apiRoot });
+                result = `Command Executed: ${cmd}\nSTDOUT: ${stdout}\nSTDERR: ${stderr}`;
+                console.log(chalk.green(`     ✅ Command Success: ${cmd}`));
+            } catch (err: any) {
+                result = `Execution Error: ${err.message}`;
+                console.log(chalk.red(`     ❌ Command Failed.`));
+            }
+            break;
+        }
+
+        // 10. STATUS CHECKER
+        case 'get_status': {
+            const targetPath = path.resolve(apiRoot, args.path);
+
+            // Filter messages relevant to this specific path
+            const relevantTools = messages.filter(m =>
+                m.role === 'tool' &&
+                (m.content?.includes(args.path) || m.content?.includes(path.basename(args.path)))
+            );
+
+            const hasApproval = relevantTools.some(m => m.content?.startsWith('APPROVED:'));
+            const isWritten = relevantTools.some(m => m.content?.includes('FILE_SAVED') || m.content?.includes('FILE_WRITTEN'));
+            const isLinted = relevantTools.some(m => m.content?.includes('BIOME_PASSED'));
+            const hasTests = relevantTools.some(m => m.content?.includes('TESTS_GENERATED'));
+            const testsPassed = relevantTools.some(m => m.content?.includes('PASS') && m.content?.toLowerCase().includes('test'));
+
+            result = `📊 STATUS REPORT: ${args.path}
+                - Approved: ${hasApproval ? '✅' : '❌'}
+                - Written to Disk: ${isWritten ? '✅' : '❌'}
+                - Biome/Lint Passed: ${isLinted ? '✅' : '❌'}
+                - Tests Generated: ${hasTests ? '✅' : '❌'}
+                - Tests Passed: ${testsPassed ? '✅' : '❌'}
+
+                NEXT RECOMMENDED STEP: ${!hasApproval ? 'propose_fix' :
+                    !isWritten ? 'write_fix' :
+                        !isLinted ? 'run_biome_check' :
+                            !hasTests ? 'generate_tests' :
+                                !testsPassed ? 'run_command (npm test)' : 'Remediation Complete.'
+                }
+                `;
+
+            console.log(chalk.blue(`     📊 Status checked for ${args.path}`));
+            break;
+        }
+
         default:
             result = `ERROR: Tool ${name} not found.`;
     }
 
-    // UPDATED SCRATCHPAD LOGGING (MORE DETAILED)
-    await updateScratchpad(`
-### 🛠️ TOOL: ${name}
-**Path:** ${args.path || 'N/A'}
-**Result:** ${result.slice(0, 500)}${result.length > 500 ? '...' : ''}
----`);
+    // UPDATE SCRATCHPAD FOR AGENT PERSISTENCE
+    await updateScratchpad(`\n### 🛠️ TOOL: ${name}\n**Path:** ${args.path || 'N/A'}\n**Result:** ${result.slice(0, 800)}${result.length > 800 ? '...' : ''}\n---`);
 
     return { status: 'CONTINUE', result, latestError };
-}
-
-function execPromise(command: any, arg1: { cwd: string; }): { stdout: any; stderr: any; } | PromiseLike<{ stdout: any; stderr: any; }> {
-    throw new Error('Function not implemented.');
 }

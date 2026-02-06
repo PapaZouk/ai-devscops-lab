@@ -4,6 +4,23 @@ export const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     {
         type: 'function',
         function: {
+            name: "get_status",
+            description: "Returns the current state of a file (Approved, Written, Linted, Tested) to prevent redundant steps.",
+            parameters: {
+                type: "object",
+                properties: {
+                    path: {
+                        type: "string",
+                        description: "The path of the file to check."
+                    }
+                },
+                required: ["path"]
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
             name: 'read_file',
             description: 'Read a file.',
             parameters: {
