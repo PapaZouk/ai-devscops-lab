@@ -7,8 +7,9 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// 1. Define the absolute path to your target application
+// 1. Configuration & Paths
 const TARGET_APP_PATH = path.resolve(__dirname, "../../vulnerable-api-app");
+const MAX_STEPS = 15; // Increased slightly for breathing room, but prompt is now stricter
 
 const lmStudio = new OpenAI({
   baseURL: "http://localhost:1234/v1",
@@ -18,11 +19,9 @@ const lmStudio = new OpenAI({
 const transport = new StdioClientTransport({
   command: "node",
   args: [path.resolve(__dirname, "../../mcp-security-server/build/index.js")],
-  // 2. Inject the target path into the MCP server's environment
   env: {
     ...process.env,
     CWD: TARGET_APP_PATH,
-    // We also set the actual process working directory for the spawned server
     NODE_PATH: process.env.NODE_PATH || ""
   },
 });
@@ -50,15 +49,16 @@ async function runAgent() {
   let messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     {
       role: "system",
-      // 3. Explicitly tell the AI where it is working to prevent confusion
-      content: `You are an Autonomous Security Architect. 
-      Your working directory is: ${TARGET_APP_PATH}.
-      
-      STRICT EXIT PROTOCOL:
-      1. Your goal is ONLY to fix the specified vulnerability.
-      2. As soon as you receive a "SUCCESS" from a tool and have no more critical changes, you MUST stop.
-      3. Do not explore the directory further after a successful fix unless requested.
-      4. End your final summary with: "TERMINATE_SESSION".`
+      content: `You are an Autonomous Security Architect.
+        Working Directory: ${TARGET_APP_PATH}.
+
+        MISSION:
+        Fix the specific vulnerability requested. Do not perform excessive directory exploration.
+        
+        STRICT RULES:
+        1. Once the fix is confirmed (SUCCESS from secure_write), immediately summarize and stop.
+        2. You MUST end your final response with the keyword: TERMINATE_SESSION.
+        3. Do not suggest further improvements once the primary vulnerability is fixed.`
     },
     {
       role: "user",
@@ -66,8 +66,12 @@ async function runAgent() {
     }
   ];
 
-  while (true) {
-    console.log("\n🧠 AI is thinking...");
+  let stepCount = 0;
+
+  while (stepCount < MAX_STEPS) {
+    stepCount++;
+    console.log(`\n🧠 AI is thinking (Step ${stepCount}/${MAX_STEPS})...`);
+
     const response = await lmStudio.chat.completions.create({
       model: "openai/gpt-oss-20b",
       messages,
@@ -76,13 +80,24 @@ async function runAgent() {
     });
 
     const aiMessage = response.choices[0].message;
-    messages.push(aiMessage);
+    const content = aiMessage.content || "";
 
-    if (!aiMessage.tool_calls) {
-      console.log("\n🏁 Final Report:", aiMessage.content);
-      break;
+    // 1. PRIORITY CHECK: Did the AI signal termination?
+    if (content.includes("TERMINATE_SESSION")) {
+      console.log("\n✅ Task successfully completed.");
+      console.log("\n🏁 Final Report:", content.replace("TERMINATE_SESSION", "").trim());
+      return; // Exit the function entirely
     }
 
+    messages.push(aiMessage);
+
+    // 2. If no tools were called, treat as a completion even without the keyword
+    if (!aiMessage.tool_calls || aiMessage.tool_calls.length === 0) {
+      console.log("\n🏁 Final Report:", content || "No further actions taken.");
+      return;
+    }
+
+    // 3. EXECUTION: Process tool calls
     for (const toolCall of aiMessage.tool_calls) {
       console.log(`🛠️  Executing: ${toolCall.function.name}`);
 
@@ -90,9 +105,12 @@ async function runAgent() {
         const result = await mcpClient.callTool({
           name: toolCall.function.name,
           arguments: JSON.parse(toolCall.function.arguments),
-        });
+        }) as { content: { type: string; text?: string }[] };
 
-        const toolOutput = result.content.map(c => (c.type === 'text' ? c.text : '')).join('\n');
+        const toolOutput = result.content
+          .filter(c => c.type === 'text')
+          .map(c => c.text || '')
+          .join('\n');
 
         messages.push({
           role: "tool",
@@ -102,6 +120,7 @@ async function runAgent() {
 
         console.log(`📡 Data sent back to AI (${toolOutput.length} chars)`);
       } catch (err: any) {
+        console.error(`❌ Tool Execution Error: ${err.message}`);
         messages.push({
           role: "tool",
           tool_call_id: toolCall.id,
@@ -110,6 +129,8 @@ async function runAgent() {
       }
     }
   }
+
+  console.log("\n⚠️  Maximum steps reached. Safety shutdown initiated.");
 }
 
 runAgent().catch(err => {
