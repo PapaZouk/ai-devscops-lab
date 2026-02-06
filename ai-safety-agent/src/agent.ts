@@ -4,20 +4,27 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import path from "path";
 import { fileURLToPath } from "url";
 
-// Fix for ESM __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// 1. Define the absolute path to your target application
+const TARGET_APP_PATH = path.resolve(__dirname, "../../vulnerable-api-app");
 
 const lmStudio = new OpenAI({
   baseURL: "http://localhost:1234/v1",
   apiKey: "lm-studio",
 });
 
-// Setup the Transport to talk to your MCP server
 const transport = new StdioClientTransport({
   command: "node",
-  // Ensure this points to your COMPILED mcp-security-server index.js
   args: [path.resolve(__dirname, "../../mcp-security-server/build/index.js")],
+  // 2. Inject the target path into the MCP server's environment
+  env: {
+    ...process.env,
+    CWD: TARGET_APP_PATH,
+    // We also set the actual process working directory for the spawned server
+    NODE_PATH: process.env.NODE_PATH || ""
+  },
 });
 
 const mcpClient = new Client(
@@ -27,9 +34,9 @@ const mcpClient = new Client(
 
 async function runAgent() {
   await mcpClient.connect(transport);
-  console.log("🔌 Connected to MCP Tool Server");
+  console.log(`🔌 Connected to MCP Tool Server`);
+  console.log(`🎯 Target App Root: ${TARGET_APP_PATH}`);
 
-  // 1. DYNAMICALLY get tools (No hardcoding logic!)
   const { tools } = await mcpClient.listTools();
   const toolDefinitions = tools.map(t => ({
     type: "function" as const,
@@ -43,7 +50,11 @@ async function runAgent() {
   let messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     {
       role: "system",
-      content: "You are an Autonomous Security Architect. Use tools to analyze and fix code. You MUST provide a final summary when done."
+      // 3. Explicitly tell the AI where it is working to prevent confusion
+      content: `You are an Autonomous Security Architect. 
+      Your working directory is fixed to the 'vulnerable-api-app' folder. 
+      Current target: ${TARGET_APP_PATH}.
+      Always assume paths are relative to this root.`
     },
     {
       role: "user",
@@ -63,25 +74,20 @@ async function runAgent() {
     const aiMessage = response.choices[0].message;
     messages.push(aiMessage);
 
-    // If AI is done and just talking
     if (!aiMessage.tool_calls) {
       console.log("\n🏁 Final Report:", aiMessage.content);
       break;
     }
 
-    // 2. DISPATCHER (Logic-free)
     for (const toolCall of aiMessage.tool_calls) {
-      console.log(`🛠️  Executing: ${toolCall.function.name}(${toolCall.function.arguments})`);
+      console.log(`🛠️  Executing: ${toolCall.function.name}`);
 
       try {
-        // We call the tool via the MCP client bridge
         const result = await mcpClient.callTool({
           name: toolCall.function.name,
           arguments: JSON.parse(toolCall.function.arguments),
         });
 
-        // 3. FEEDBACK (The most important part)
-        // We take the actual text from the tool and give it to the AI
         const toolOutput = result.content.map(c => (c.type === 'text' ? c.text : '')).join('\n');
 
         messages.push({
@@ -90,7 +96,7 @@ async function runAgent() {
           content: toolOutput || "Success",
         });
 
-        console.log(`📡 Data sent to AI (${toolOutput.length} characters)`);
+        console.log(`📡 Data sent back to AI (${toolOutput.length} chars)`);
       } catch (err: any) {
         messages.push({
           role: "tool",
