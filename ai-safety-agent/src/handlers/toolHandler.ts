@@ -146,45 +146,62 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
 
         // 6. FILE SYSTEM: WRITE (Strict Approval Check)
         case 'write_fix': {
+            // 1. Find the most recent approval in the message history
             const lastApprovalMessage = [...messages].reverse().find(m =>
-                m.role === 'tool' && m.content?.startsWith('APPROVED:')
+                m.role === 'tool' && m.content?.includes('APPROVED:')
             );
 
             let isApproved = false;
+            let approvedPathRaw = "NONE";
+
             if (lastApprovalMessage) {
-                const approvedPathRaw = lastApprovalMessage.content.replace('APPROVED: ', '').split('\n')[0].trim();
-                const absoluteApprovedPath = path.resolve(apiRoot, approvedPathRaw);
-                const absoluteTargetPath = path.resolve(apiRoot, args.path);
-                isApproved = absoluteApprovedPath === absoluteTargetPath;
+                // Extract path after 'APPROVED: ' but before any newlines
+                const match = lastApprovalMessage.content.match(/APPROVED:\s*([^\n]+)/);
+                if (match) {
+                    approvedPathRaw = match[1].trim();
+
+                    // Normalize both paths to absolute paths to ensure a fair comparison
+                    const absoluteApprovedPath = path.resolve(apiRoot, approvedPathRaw);
+                    const absoluteTargetPath = path.resolve(apiRoot, args.path);
+
+                    isApproved = absoluteApprovedPath === absoluteTargetPath;
+                }
             }
 
+            // 2. Safety Gate: Block if not approved
             if (!isApproved) {
-                const lastPath = lastApprovalMessage?.content?.split('\n')[0] || "NONE";
                 result = `❌ ERROR: WRITE_BLOCKED
                     PATH: ${args.path}
-                    REASON: This specific path has not been approved.
-                    LAST_APPROVAL: ${lastPath}
+                    REASON: This specific path has not been approved by the Auditor.
+                    LAST_APPROVED_PATH: ${approvedPathRaw}
 
                     REQUIRED ACTION:
-                    1. You are trying to write to a file that was not the last one approved.
-                    2. If you just generated tests, you MUST call 'propose_fix' for the test file before writing it.
-                    3. Call 'get_status' if you are confused about what is approved.`;
+                    1. You MUST call 'propose_fix' for '${args.path}' before you can write it.
+                    2. An approval for one file (e.g., source) does NOT authorize writing to another (e.g., test).
+                    3. If the paths look the same, check for typos or directory depth errors.
+                `;
 
-                console.log(chalk.red.bold(`     ⚠️ Safety: Blocked write for ${args.path}.`));
+                console.log(chalk.red.bold(`     ⚠️ Safety: Blocked write for ${args.path}. Path mismatch.`));
                 return { status: 'CONTINUE', result, latestError };
             }
 
+            // 3. Execution: Write to disk
             try {
                 await fs.writeFile(fullPath, args.code, 'utf8');
+
+                // Flush-left result to prevent token bloat
                 result = `💾 STATUS: FILE_WRITTEN
                     PATH: ${args.path}
 
                     CRITICAL NEXT STEP:
                     1. You MUST now call 'run_biome_check' on '${args.path}' immediately.
-                    2. The remediation is NOT complete until Biome passes. Do not summarize, just run the check.`;
+                    2. If this is a TEST file and Biome passes, proceed to 'run_command' with 'npm test'.
+                    3. If this is SOURCE code and Biome passes, proceed to 'generate_tests'.`;
+
                 console.log(chalk.yellow(`     💾 Saved ${args.path}.`));
             } catch (error: any) {
                 result = `❌ ERROR: Failed to write to disk: ${error.message}`;
+                console.log(chalk.red(`     ❌ Disk Error: ${error.message}`));
                 return { status: 'CONTINUE', result, latestError };
             }
             break;
@@ -193,27 +210,31 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
         // 7. QUALITY GATE: BIOME LINTING
         case 'run_biome_check': {
             const diagnostics = await getBiomeDiagnostics(fullPath);
+
             if (!diagnostics || diagnostics.length === 0) {
                 result = `✅ STATUS: BIOME_PASSED
-                FILE: ${args.path}
+                    FILE: ${args.path}
 
-                NEXT MANDATORY STEP:
-                - If this is SOURCE code: Call 'generate_tests' now.
-                - If this is a TEST file: Call 'run_command' with 'npm test'.`;
+                    NEXT STEP:
+                    - If this was a SOURCE file (.ts), call 'generate_tests' now.
+                    - If this was a TEST file (.test.ts), call 'run_command' with 'npm test'.`;
                 console.log(chalk.green(`     ✅ Biome passed: ${args.path}`));
             } else {
+                const hasFixable = diagnostics.some(d => d.code?.includes('format') || d.code?.includes('organizeImports'));
                 const summary = diagnostics.map(d => `• [${d.code}] ${d.message}`).join('\n');
+
                 result = `❌ STATUS: BIOME_FAILED
-                FILE: ${args.path}
+                    FILE: ${args.path}
 
-                ISSUES FOUND:
-                ${summary}
+                    ISSUES:
+                    ${summary}
 
-                REQUIRED ACTION:
-                1. Fix the syntax/linting errors shown above.
-                2. Call 'write_fix' with corrected code.
-                3. Call 'run_biome_check' again.`;
-                console.log(chalk.red(`     ❌ Biome found ${diagnostics.length} issues.`));
+                    ${hasFixable ? `💡 AUTO-FIX AVAILABLE:
+                    Run 'run_command' with: "npx @biomejs/biome check --write ${args.path}" to fix these formatting issues automatically.` : ''}
+
+                    REQUIRED ACTION: Repair logic or use the auto-fix command above, then re-run 'run_biome_check'.`;
+
+                console.log(chalk.red(`     ❌ Biome failed for ${args.path}`));
             }
             break;
         }
