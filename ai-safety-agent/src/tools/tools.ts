@@ -110,5 +110,22 @@ export const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                 required: ["action", "path"]
             }
         }
-    }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'run_biome_check',
+            description: 'Runs Biome linting and formatting checks on a file. Use this to ensure TypeScript code quality and identify syntax errors before finalizing a fix.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    path: {
+                        type: 'string',
+                        description: 'The path to the .ts file to check.'
+                    }
+                },
+                required: ['path']
+            }
+        }
+    },
 ];

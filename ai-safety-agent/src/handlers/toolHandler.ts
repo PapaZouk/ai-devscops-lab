@@ -7,6 +7,7 @@ import { runReviewerAgent } from '../reviewerAgent.js';
 import { updateScratchpad } from '../helpers/updateScratchpad.js';
 import { runTestingAgent } from '../testingAgent.js';
 import { checkpointManager } from '../tools/checkpointManager.js';
+import { getBiomeDiagnostics } from '../scanners/getBiomeDiagnostics.js';
 
 interface ToolContext {
     apiRoot: string;
@@ -166,6 +167,17 @@ export async function handleToolCall(name: string, args: any, context: ToolConte
             result = `TARGET_PATH: ${targetTestPath}\n\n${testCode}`;
             console.log(chalk.green(`     ✅ Test suite generated for ${targetTestPath}`));
             break;
+
+        case 'run_biome_check': {
+            const diagnostics = await getBiomeDiagnostics(args.path);
+            if (!diagnostics) {
+                return { status: 'SUCCESS', result: "✅ Biome check passed: No linting or syntax issues found." };
+            }
+            return {
+                status: 'VALIDATION_FAILED',
+                result: `❌ Biome found issues:\n${JSON.stringify(diagnostics, null, 2)}`
+            };
+        }
         default:
             result = `ERROR: Tool ${name} not found.`;
     }
