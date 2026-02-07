@@ -1,4 +1,14 @@
 node_modules/
+output/
+tmp/
+.DS_Store
+*.bak
+*.tmp
+*.md
+*.checkpoint
+*.log
+*.db
+security_audit.db
 .env
 victim-app/report.json
 *.json

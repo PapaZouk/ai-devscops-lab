@@ -5,14 +5,14 @@ import path from "path";
 import db from "../utils/db.js";
 import chalk from "chalk";
 
-/**
- * List of extensions currently supported by Biome.
- * Biome will throw an error if called on an unsupported file (like .env).
- */
 const BIOME_SUPPORTED_EXTENSIONS = new Set([
     ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs", ".json", ".jsonc"
 ]);
 
+/**
+ * List of extensions currently supported by Biome.
+ * Biome will throw an error if called on an unsupported file (like .env).
+ */
 export async function handleSecureWrite(
     projectRoot: string,
     args: { path: string; code: string; isTest: boolean }
@@ -20,7 +20,6 @@ export async function handleSecureWrite(
     const { path: relativePath, code, isTest } = args;
     const fullPath = path.resolve(projectRoot, relativePath);
 
-    // Security Guard: Prevent writing outside the project root
     if (!fullPath.startsWith(path.resolve(projectRoot))) {
         throw new McpError(ErrorCode.InvalidParams, "❌ REJECTED: Attempted to write outside project root.");
     }
@@ -32,10 +31,7 @@ export async function handleSecureWrite(
     console.log(chalk.blue.bold(`Starting secureWrite for: ${relativePath}`));
 
     try {
-        // Ensure directory exists
         await fs.mkdir(path.dirname(fullPath), { recursive: true });
-
-        // Write the file
         await fs.writeFile(fullPath, code, "utf-8");
 
         let status = 'SUCCESS';
@@ -43,7 +39,6 @@ export async function handleSecureWrite(
 
         const extension = path.extname(fullPath).toLowerCase();
 
-        // Only run Biome if the file extension is supported
         if (BIOME_SUPPORTED_EXTENSIONS.has(extension)) {
             try {
                 console.log(chalk.gray(`Linting with Biome: ${relativePath}`));
@@ -61,14 +56,13 @@ export async function handleSecureWrite(
                         type: "text",
                         text: `✅ FILE SAVED, but Biome formatting failed. Do not try to re-write the same file. Error: ${biomeError.message}`
                     }],
-                    isError: false // CHANGE THIS TO FALSE
+                    isError: false
                 };
             }
         } else {
             console.log(chalk.magenta(`ℹ️ Skipping Biome for ${extension} file: ${relativePath}`));
         }
 
-        // Log to Audit Database
         const stmt = db.prepare(`
             INSERT INTO audit_logs (file_path, action, status, biome_output) 
             VALUES (?, ?, ?, ?)

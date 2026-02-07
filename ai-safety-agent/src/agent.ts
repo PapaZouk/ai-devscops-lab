@@ -3,13 +3,17 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import path from "path";
 import { fileURLToPath } from "url";
+import { setupLogger } from "./config/setupLogger.js";
+import { getLogger } from "@logtape/logtape";
+
+await setupLogger();
+const logger = getLogger(["security-agent"]);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// 1. Configuration & Paths
 const TARGET_APP_PATH = path.resolve(__dirname, "../../vulnerable-api-app");
-const MAX_STEPS = 15; // Increased slightly for breathing room, but prompt is now stricter
+const MAX_STEPS = 15;
 
 const lmStudio = new OpenAI({
   baseURL: "http://localhost:1234/v1",
@@ -33,8 +37,8 @@ const mcpClient = new Client(
 
 async function runAgent() {
   await mcpClient.connect(transport);
-  console.log(`🔌 Connected to MCP Tool Server`);
-  console.log(`🎯 Target App Root: ${TARGET_APP_PATH}`);
+  logger.info(`🔌 Connected to MCP Tool Server`);
+  logger.info(`🎯 Target App Root: ${TARGET_APP_PATH}`);
 
   const { tools } = await mcpClient.listTools();
   const toolDefinitions = tools.map(t => ({
@@ -70,7 +74,7 @@ async function runAgent() {
 
   while (stepCount < MAX_STEPS) {
     stepCount++;
-    console.log(`\n🧠 AI is thinking (Step ${stepCount}/${MAX_STEPS})...`);
+    logger.info(`\n🧠 AI is thinking (Step ${stepCount}/${MAX_STEPS})...`);
 
     const response = await lmStudio.chat.completions.create({
       model: "openai/gpt-oss-20b",
@@ -82,58 +86,61 @@ async function runAgent() {
     const aiMessage = response.choices[0].message;
     const content = aiMessage.content || "";
 
-    // 1. PRIORITY CHECK: Did the AI signal termination?
     if (content.includes("TERMINATE_SESSION")) {
-      console.log("\n✅ Task successfully completed.");
-      console.log("\n🏁 Final Report:", content.replace("TERMINATE_SESSION", "").trim());
-      return; // Exit the function entirely
+      logger.info("\n✅ Task successfully completed.");
+      logger.info(`\n🏁 Final Report: ${content.replace("TERMINATE_SESSION", "").trim()}`);
+      return;
     }
 
     messages.push(aiMessage);
 
-    // 2. If no tools were called, treat as a completion even without the keyword
     if (!aiMessage.tool_calls || aiMessage.tool_calls.length === 0) {
-      console.log("\n🏁 Final Report:", content || "No further actions taken.");
+      logger.info(`\n🏁 Final Report: ${content || "No further actions taken."}`);
       return;
     }
 
-    // 3. EXECUTION: Process tool calls
     for (const toolCall of aiMessage.tool_calls) {
-      console.log(`🛠️  Executing: ${toolCall.function.name}`);
+      if (toolCall.type === "function" && toolCall.function) {
+        logger.info(`🛠️  Executing: ${toolCall.function.name}`);
 
-      try {
-        const result = await mcpClient.callTool({
-          name: toolCall.function.name,
-          arguments: JSON.parse(toolCall.function.arguments),
-        }) as { content: { type: string; text?: string }[] };
+        logger.info(`🛠️  Executing: ${toolCall.function.name}`);
 
-        const toolOutput = result.content
-          .filter(c => c.type === 'text')
-          .map(c => c.text || '')
-          .join('\n');
+        try {
+          const result = await mcpClient.callTool({
+            name: toolCall.function.name,
+            arguments: JSON.parse(toolCall.function.arguments),
+          }) as { content: { type: string; text?: string }[] };
 
-        messages.push({
-          role: "tool",
-          tool_call_id: toolCall.id,
-          content: toolOutput || "Success",
-        });
+          const toolOutput = result.content
+            .filter(c => c.type === 'text')
+            .map(c => c.text || '')
+            .join('\n');
 
-        console.log(`📡 Data sent back to AI (${toolOutput.length} chars)`);
-      } catch (err: any) {
-        console.error(`❌ Tool Execution Error: ${err.message}`);
-        messages.push({
-          role: "tool",
-          tool_call_id: toolCall.id,
-          content: `Error: ${err.message}`,
-        });
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: toolOutput || "Success",
+          });
+
+          logger.info(`📡 Data sent back to AI (${toolOutput.length} chars)`);
+        } catch (err: any) {
+          logger.error(`❌ Tool Execution Error: ${err.message}`);
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: `Error: ${err.message}`,
+          });
+        }
+      } else {
+        logger.warn(`⚠️  Unrecognized tool call format: ${JSON.stringify(toolCall)}`);
       }
     }
   }
 
-  console.log("\n⚠️  Maximum steps reached. Safety shutdown initiated.");
+  logger.warn("\n⚠️  Maximum steps reached. Safety shutdown initiated.");
 }
 
 runAgent().catch(err => {
-  console.error("❌ Agent failed:", err);
+  logger.error("❌ Agent failed:", err);
   process.exit(1);
 });
