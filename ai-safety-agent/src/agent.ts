@@ -7,7 +7,7 @@ import { setupLogger } from "./config/setupLogger.js";
 import { getLogger } from "@logtape/logtape";
 
 await setupLogger();
-const logger = getLogger(["security-agent"]);
+const logger = getLogger(["agent"]);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -61,8 +61,11 @@ async function runAgent() {
         
         STRICT RULES:
         1. Once the fix is confirmed (SUCCESS from secure_write), immediately summarize and stop.
-        2. You MUST end your final response with the keyword: TERMINATE_SESSION.
-        3. Do not suggest further improvements once the primary vulnerability is fixed.`
+        2. Do not suggest further improvements once the primary vulnerability is fixed.
+        3. Do not perform any actions that are not directly related to fixing the specified vulnerability.
+        
+        IMPORTANT:
+        - Once finished, respond with full report and the keyword TERMINATE_SESSION to end the session.`
     },
     {
       role: "user",
@@ -89,6 +92,7 @@ async function runAgent() {
     if (content.includes("TERMINATE_SESSION")) {
       logger.info("\n✅ Task successfully completed.");
       logger.info(`\n🏁 Final Report: ${content.replace("TERMINATE_SESSION", "").trim()}`);
+      process.exit(0);
       return;
     }
 
@@ -96,6 +100,7 @@ async function runAgent() {
 
     if (!aiMessage.tool_calls || aiMessage.tool_calls.length === 0) {
       logger.info(`\n🏁 Final Report: ${content || "No further actions taken."}`);
+      process.exit(0);
       return;
     }
 
