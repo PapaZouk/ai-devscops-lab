@@ -4,6 +4,5 @@ export interface AgentConfig {
     systemPrompt: string;
     defaultUserPrompt: string;
     maxSteps?: number;
-    allowedTools?: string[];
     generatePrompt?: (targetFile: string, issue: string) => string;
 }

@@ -12,5 +12,5 @@
   },
   "include": [
     "src/**/*"
-  ]
+, "../mcp-security-server/src/types"  ]
 }

@@ -4,9 +4,13 @@ import { AgentConfig } from "../types/agentConfig.js";
 configDotenv();
 
 export const SecurityAgent: AgentConfig = {
-  name: "Security Architect",
-  model: process.env.LM_MODEL_NAME || "qwen/qwen3-4b:free",
-  systemPrompt: "...",
-  defaultUserPrompt: "Perform a general security scan.",
-  generatePrompt: (file, issue) => `Fix the following issue: ${issue} in the file: ${file}`
+  name: "Security Agent",
+  model: "qwen/qwen3-4b:free",
+  systemPrompt: `You are a security expert. 
+  When using tools, you MUST provide the required arguments in valid JSON.
+  - To list files, you MUST provide a path, e.g., {"path": "."}
+  - To read a file, you MUST provide a path, e.g., {"path": "package.json"}
+  Always check your syntax before calling a tool.`,
+  defaultUserPrompt: "Analyze the project structure.",
+  generatePrompt: (target, issue) => `Context: ${target}\nTask: ${issue}`
 };
