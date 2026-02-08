@@ -1,0 +1,6 @@
+{
+	"files": {
+		"includes": ["**/*.ts", "**/*.js", ".env.example", ".env"]
+	},
+	"linter": { "enabled": false }
+}

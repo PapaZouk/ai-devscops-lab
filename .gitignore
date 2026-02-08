@@ -11,4 +11,3 @@ tmp/
 security_audit.db
 .env
 victim-app/report.json
-*.json
