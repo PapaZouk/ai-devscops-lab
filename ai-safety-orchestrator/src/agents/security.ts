@@ -5,7 +5,7 @@ configDotenv();
 
 export const SecurityAgent: AgentConfig = {
   name: "Security Agent",
-  model: "qwen/qwen3-4b:free",
+  model: process.env.LM_MODEL_NAME || "gpt-4o",
   systemPrompt: `You are a security expert. 
   When using tools, you MUST provide the required arguments in valid JSON.
   - To list files, you MUST provide a path, e.g., {"path": "."}
