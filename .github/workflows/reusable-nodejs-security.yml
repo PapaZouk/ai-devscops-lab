@@ -15,33 +15,46 @@ on:
 jobs:
   api-patch:
     runs-on: ubuntu-latest
-    
-    defaults:
-      run:
-        working-directory: ai-tools/ai-safety-orchestrator
-
     steps:
-      - name: Checkout Target (Vulnerable) Repo
+      - name: Checkout Target Repository
         uses: actions/checkout@v4
         with:
-          path: target-repo 
+          path: target-repo
 
-      - name: Checkout AI Tools Repo
+      - name: Checkout DevScops Lab Repository
         uses: actions/checkout@v4
         with:
           repository: PapaZouk/ai-devscops-lab
           path: ai-tools
 
+      - name: Debug - List All Files
+        # This will tell us EXACTLY where package.json is located
+        run: |
+          echo "Listing structure of ai-tools folder:"
+          ls -R ai-tools | grep ":$" | sed -e 's/:$//' -e 's/[^-][^\/]*\//--/g' -e 's/^/   /'
+          echo "Searching for package.json location:"
+          find ai-tools -name "package.json"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20.x
+          node-version: 20
 
-      - name: Install Dependencies
-        run: npm install
-
-      - name: Run AI Fixer
+      - name: Install & Run
         run: |
+          # Dynamically find the directory containing package.json inside ai-tools
+          CONF_DIR=$(find ${{ github.workspace }}/ai-tools -name "package.json" -exec dirname {} \; | head -n 1)
+          
+          if [ -z "$CONF_DIR" ]; then
+            echo "Error: package.json not found in ai-tools repository!"
+            exit 1
+          fi
+          
+          echo "Found package.json in: $CONF_DIR"
+          cd "$CONF_DIR"
+          
+          npm install
+          
           npx tsx src/main.ts \
             --agent=security \
             --target=${{ github.workspace }}/target-repo \
