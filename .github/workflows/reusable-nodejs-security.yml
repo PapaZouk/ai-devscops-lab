@@ -44,28 +44,25 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
-      - name: Install and Build Tools
+      - name: Build MCP Server
         run: |
-          # 1. Install dependencies for the orchestrator
-          npm install
-          
-          # 2. Build the MCP Security Server so the orchestrator can find build/index.js
-          # We move to that directory, install its specific needs, and build it.
           cd ../mcp-security-server
           npm install
           npm run build
-          
-          # 3. Return to the orchestrator directory for the next step
-          cd ../ai-safety-orchestrator
 
       - name: Run AI Fixer
         run: |
+          # Use absolute path for target to avoid confusion
+          TARGET_PATH="${{ github.workspace }}/target-repo"
+          
           npx tsx src/main.ts \
             --agent=security \
-            --target=${{ github.workspace }}/target-repo \
+            --target=$TARGET_PATH \
             --input="${{ inputs.vulnerability_description }}"
         env:
           LM_API_KEY: ${{ secrets.LM_API_KEY }}   
           LM_BASE_URL: ${{ inputs.llm_url }}
+          # Ensure your main.ts/orchestrator actually reads this model name!
           LM_MODEL_NAME: ${{ inputs.llm_model_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_ENV: production
