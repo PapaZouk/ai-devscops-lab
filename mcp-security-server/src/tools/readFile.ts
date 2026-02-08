@@ -10,34 +10,34 @@ export async function handleReadFile(
     projectRoot: string,
     args: { path: string }
 ) {
-    const { path: relativePath } = args;
-    const fullPath = path.resolve(projectRoot, relativePath);
-    logger.info(chalk.blue.bold(`Starting readFile for: ${relativePath}`));
+    const { path: requestedPath } = args;
+    const skillsPath = process.env.SKILLS_PATH ? path.resolve(process.env.SKILLS_PATH) : "";
+    const fullPath = path.resolve(projectRoot, requestedPath);
 
-    if (!fullPath.startsWith(projectRoot)) {
-        logger.warn(chalk.yellow.bold(`⚠️ REJECTED readFile for: ${relativePath} (outside project root)`));
+    logger.info(chalk.blue.bold(`Starting readFile for: ${requestedPath}`));
+
+    const isInsideProject = fullPath.startsWith(path.resolve(projectRoot));
+    const isInsideSkills = skillsPath && fullPath.startsWith(skillsPath);
+
+    if (!isInsideProject && !isInsideSkills) {
+        logger.warn(chalk.yellow.bold(`⚠️ REJECTED: ${requestedPath} is outside allowed boundaries.`));
         throw new McpError(
             ErrorCode.InvalidParams,
-            "❌ ACCESS DENIED: Cannot read files outside the project root."
-        )
+            "❌ ACCESS DENIED: Path is outside project and skills library."
+        );
     }
 
     if (
-        relativePath.includes("node_modules") ||
-        relativePath.includes(".git") ||
-        relativePath.includes(".env") ||
-        relativePath.includes("security_audit.db")
+        requestedPath.includes("node_modules") ||
+        requestedPath.includes(".git") ||
+        requestedPath.includes(".env")
     ) {
-        logger.warn(chalk.yellow.bold(`⚠️ REJECTED readFile for: ${relativePath} (restricted path)`));
-        throw new McpError(
-            ErrorCode.InvalidParams,
-            "❌ ACCESS DENIED: Reading from this path is not allowed."
-        );
+        logger.warn(chalk.yellow.bold(`⚠️ REJECTED restricted path: ${requestedPath}`));
+        throw new McpError(ErrorCode.InvalidParams, "❌ ACCESS DENIED: Restricted path.");
     }
 
     try {
         const content = await fs.readFile(fullPath, "utf-8");
-
         return {
             content: [{
                 type: "text" as const,
@@ -47,9 +47,9 @@ export async function handleReadFile(
         };
     } catch (error: any) {
         if (error.code === "ENOENT") {
-            throw new McpError(ErrorCode.InvalidParams, `❌ FILE NOT FOUND: ${relativePath} does not exist.`);
+            throw new McpError(ErrorCode.InvalidParams, `❌ FILE NOT FOUND: ${requestedPath}`);
         }
-        logger.error(chalk.red.bold(`Error in readFile for ${relativePath}: ${error.message}`));
+        logger.error(chalk.red.bold(`Error in readFile: ${error.message}`));
         throw new McpError(ErrorCode.InternalError, `Failed to read file: ${error.message}`);
     }
 }
