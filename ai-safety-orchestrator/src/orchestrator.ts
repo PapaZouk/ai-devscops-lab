@@ -34,9 +34,14 @@ export async function startOrchestrator(
     await mcpClient.connect(transport);
     logger.info(chalk.green.bold("🚀 Orchestrator connected to MCP server"));
 
+    const AI_BASE_URL = process.env.LM_BASE_URL || "http://localhost:1234/v1";
+    const AI_API_KEY = process.env.LM_API_KEY || "lm-studio";
+
+    logger.info(chalk.blue(`🤖 Using AI model at: ${AI_BASE_URL} and model: ${config.model || "qwen/qwen3-4b:free"}`));
+
     const lmStudio = new OpenAI({
-        baseURL: process.env.LM_BASE_URL || "http://localhost:1234/v1",
-        apiKey: process.env.LM_API_KEY || "lm-studio"
+        baseURL: AI_BASE_URL,
+        apiKey: AI_API_KEY
     });
 
     const { tools } = await mcpClient.listTools();
@@ -73,14 +78,14 @@ export async function startOrchestrator(
             });
         } catch (error: any) {
             logger.error(chalk.red(`❌ Error during LM request: ${error.message}`));
-            return { success: false, report: `Error during LM request: ${error.message}` };
+            process.exit(1);
         }
 
         const aiMessage = response.choices[0].message;
-        logger.info(chalk.gray(`💬 LM Message received`));
+
         const content = aiMessage.content || "";
 
-        if (content) logger.info(chalk.gray(`💬 LM Response: ${content}`));
+        if (content) logger.info(chalk.gray("💬 Received a message from the AI"));
 
         if (content.includes("TERMINATE_SESSION")) {
             logger.info(chalk.green.bold("✅ Task completed successfully!"));
