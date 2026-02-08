@@ -1,150 +1,117 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { AgentConfig } from "./types/agentConfig.js";
-import path from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client";
+import { OpenAI } from "openai";
 import { getLogger } from "@logtape/logtape";
-import OpenAI from "openai";
 import chalk from "chalk";
-import { fileURLToPath } from "node:url";
+import path from "node:path";
+import { AgentConfig } from "./types/agentConfig.js";
+import { configDotenv } from "dotenv";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+configDotenv();
 
 const logger = getLogger("orchestrator");
 
-export async function startOrchestrator(
-    config: AgentConfig,
-    targetPath: string,
-    userPrompt: string
-) {
+export async function startOrchestrator(config: AgentConfig, targetPath: string, userPrompt: string) {
+    logger.info(chalk.blue.bold("🚀 Starting Orchestrator..."));
+
+    const serverPath = path.resolve(process.cwd(), "../mcp-security-server/build/index.js");
+
     const transport = new StdioClientTransport({
         command: "node",
-        args: [path.resolve(__dirname, "../../mcp-security-server/build/index.js")],
-        env: {
-            ...process.env,
-            CWD: targetPath
-        }
+        args: [serverPath],
+        env: { ...process.env, CWD: targetPath }
     });
 
-    const mcpClient = new Client(
-        { name: "orchestrator", version: "1.0.0" },
-        { capabilities: {} }
-    );
+    const client = new Client({ name: "safety-orchestrator", version: "1.0.0" }, { capabilities: {} });
 
-    await mcpClient.connect(transport);
-    logger.info(chalk.green.bold("🚀 Orchestrator connected to MCP server"));
+    try {
+        await client.connect(transport);
+        logger.info(chalk.green("🟢 MCP Server online."));
+    } catch (err: any) {
+        logger.error(chalk.red(`❌ Connection Failed: ${err.message}`));
+        return { success: false, report: "MCP Connection Failed" };
+    }
 
-    const AI_BASE_URL = process.env.LM_BASE_URL || "http://localhost:1234/v1";
-    const AI_API_KEY = process.env.LM_API_KEY || "lm-studio";
+    const { tools } = await client.listTools();
+    logger.info(chalk.green.bold(`🛠 Discovered ${tools.length} tools.`));
 
-    logger.info(chalk.blue(`🤖 Using AI model at: ${AI_BASE_URL} and model: ${config.model || "qwen/qwen3-4b:free"}`));
-
-    const lmStudio = new OpenAI({
-        baseURL: AI_BASE_URL,
-        apiKey: AI_API_KEY
+    const openai = new OpenAI({
+        baseURL: process.env.LM_BASE_URL || "http://localhost:1234/v1",
+        apiKey: process.env.LM_API_KEY || "lm-studio"
     });
 
-    const { tools } = await mcpClient.listTools();
-    const toolDefinitions: OpenAI.Chat.ChatCompletionTool[] = tools
-        .filter((tool) => !config.allowedTools || config.allowedTools.includes(tool.name))
-        .map((tool) => ({
-            type: "function",
-            function: {
-                name: tool.name,
-                description: tool.description || "",
-                parameters: tool.inputSchema
-            }
-        }));
-
-    let messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    let messages: any[] = [
         { role: "system", content: config.systemPrompt },
-        { role: "user", content: userPrompt },
+        { role: "user", content: config.generatePrompt ? config.generatePrompt(targetPath, userPrompt) : userPrompt }
     ];
 
-    let stepCount = 0;
-    const maxAttempts = config.maxSteps || 15;
+    let turns = 0;
+    const maxTurns = 15;
 
-    while (stepCount < maxAttempts) {
-        stepCount++;
-        logger.info(chalk.blue(`\n🧠 Thinking (Step ${stepCount}/${maxAttempts})`));
+    while (turns < maxTurns) {
+        turns++;
 
-        let response;
-        try {
-            response = await lmStudio.chat.completions.create({
-                model: config.model || "qwen/qwen3-4b:free",
-                messages,
-                tools: toolDefinitions,
-                tool_choice: "auto",
-            });
-        } catch (error: any) {
-            logger.error(chalk.red(`❌ Error during LM request: ${error.message}`));
-            process.exit(1);
-        }
+        const response = await openai.chat.completions.create({
+            model: config.model,
+            messages,
+            tools: tools.map(t => ({ type: "function", function: t }))
+        });
 
-        const aiMessage = response.choices[0].message;
+        const message = response.choices[0].message;
+        messages.push(message);
 
-        const content = aiMessage.content || "";
+        logger.info(chalk.gray(`💬 Turn ${turns}: AI Message Received (role: ${message.role})`));
 
-        if (content) logger.info(chalk.gray("💬 Received a message from the AI"));
+        if (message.tool_calls && message.tool_calls.length > 0) {
+            for (const call of message.tool_calls) {
+                if (call.type === "function" && call.function) {
+                    let parsedArgs: any = {};
+                    try {
+                        parsedArgs = JSON.parse(call.function.arguments || "{}");
+                    } catch (e) {
+                        parsedArgs = { raw: call.function.arguments };
+                    }
 
-        if (content.includes("TERMINATE_SESSION")) {
-            logger.info(chalk.green.bold("✅ Task completed successfully!"));
-            await mcpClient.close();
-            await transport.close();
-            return {
-                success: true,
-                report: content.replace("TERMINATE_SESSION", "").trim()
-            }
-        }
+                    logger.info(chalk.yellow(`🔧 Tool: ${call.function.name}`));
+                    console.log(chalk.gray(JSON.stringify(parsedArgs, null, 2)));
 
-        messages.push(aiMessage);
+                    try {
+                        const result = await client.callTool({
+                            name: call.function.name,
+                            arguments: parsedArgs
+                        });
 
-        if (!aiMessage.tool_calls || aiMessage.tool_calls.length === 0) {
-            logger.info(chalk.yellow.bold("🏁 Ending session. No tool calls made by the LM."));
-            return { success: true, report: content }
-        }
-
-        for (const toolCall of aiMessage.tool_calls) {
-            if (toolCall.type === "function" && toolCall.function) {
-                logger.info(chalk.cyan(`🛠️  Executing tool: ${toolCall.function.name}`));
-
-                try {
-                    const result = await mcpClient.callTool({
-                        name: toolCall.function.name,
-                        arguments: JSON.parse(toolCall.function.arguments),
-                    }) as { content: { type: string; text?: string }[] };
-
-                    const toolOutput = result.content
-                        .filter(c => c.type === 'text')
-                        .map(c => c.text || '')
-                        .join('\n');
-
-                    messages.push({
-                        role: "tool",
-                        tool_call_id: toolCall.id,
-                        content: toolOutput || "Success",
-                    });
-
-                    logger.info(chalk.gray(`📤 Tool Output send back to AI`));
-                } catch (error: any) {
-                    logger.error(chalk.red(`❌ Error executing tool: ${error.message}`));
-                    messages.push({
-                        role: "tool",
-                        tool_call_id: toolCall.id,
-                        content: `Error: ${error.message}`,
-                    });
+                        messages.push({
+                            role: "tool",
+                            tool_call_id: call.id,
+                            content: JSON.stringify(result.content)
+                        });
+                    } catch (toolErr: any) {
+                        logger.error(chalk.red(`❌ Tool Error: ${toolErr.message}`));
+                        messages.push({
+                            role: "tool",
+                            tool_call_id: call.id,
+                            content: JSON.stringify({ error: toolErr.message })
+                        });
+                    }
                 }
-            } else {
-                logger.warn(chalk.yellow(`⚠️  Unsupported tool call type: ${toolCall.type}`));
             }
+            continue;
         }
+
+        if (message.content) {
+            console.log(chalk.cyan(`\n🤖 AI Response:\n${message.content}`));
+            break;
+        }
+
+        break;
     }
 
-    logger.warn(chalk.red.bold("\n⚠️  Maximum steps reached. Ending session."));
-    await mcpClient.close();
-    await transport.close();
-    return {
-        success: false,
-        report: "Maximum steps reached without task completion."
+    if (turns >= maxTurns) {
+        logger.warn(chalk.red("⚠️ Maximum turns reached."));
     }
+
+    await client.close();
+    await transport.close();
+    return { success: true, report: "Workflow completed." };
 }
