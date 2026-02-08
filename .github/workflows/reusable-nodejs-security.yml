@@ -63,5 +63,6 @@ jobs:
           LM_BASE_URL: ${{ inputs.llm_url }}
           LM_MODEL_NAME: ${{ inputs.llm_model_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CWD: "${{ github.workspace }}/target-repo"
           SKILLS_PATH: "${{ github.workspace }}/ai-tools/ai-safety-orchestrator/skills"
           NODE_ENV: production
