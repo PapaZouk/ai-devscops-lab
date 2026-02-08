@@ -5,7 +5,9 @@ import { startOrchestrator } from "./orchestrator.js";
 import path from "node:path";
 import { SecurityAgent } from "./agents/security.js";
 import { AgentConfig } from "./types/agentConfig.js";
+import { configDotenv } from "dotenv";
 
+configDotenv();
 await setupLogger();
 
 const logger = getLogger(["main"]);
