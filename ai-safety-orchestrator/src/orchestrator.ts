@@ -63,12 +63,18 @@ export async function startOrchestrator(
         stepCount++;
         logger.info(chalk.blue(`\n🧠 Thinking (Step ${stepCount}/${maxAttempts})`));
 
-        const response = await lmStudio.chat.completions.create({
-            model: config.model,
-            messages,
-            tools: toolDefinitions,
-            tool_choice: "auto",
-        });
+        let response;
+        try {
+            response = await lmStudio.chat.completions.create({
+                model: config.model || "qwen/qwen3-4b:free",
+                messages,
+                tools: toolDefinitions,
+                tool_choice: "auto",
+            });
+        } catch (error: any) {
+            logger.error(chalk.red(`❌ Error during LM request: ${error.message}`));
+            return { success: false, report: `Error during LM request: ${error.message}` };
+        }
 
         const aiMessage = response.choices[0].message;
         logger.info(chalk.gray(`💬 LM Message received`));

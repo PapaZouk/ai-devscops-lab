@@ -65,7 +65,7 @@ jobs:
             --target=${{ github.workspace }}/target-repo \
             --input="${{ inputs.vulnerability_description }}"
         env:
-          API_API_KEY: ${{ secrets.LM_API_KEY }}   
-          LLMSTUDIO_URL: ${{ inputs.llm_url }}
+          LM_API_KEY: ${{ secrets.LM_API_KEY }}   
+          LM_BASE_URL: ${{ inputs.llm_url }}
           LM_MODEL_NAME: ${{ inputs.llm_model_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
