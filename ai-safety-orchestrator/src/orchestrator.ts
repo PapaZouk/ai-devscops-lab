@@ -6,6 +6,7 @@ import chalk from "chalk";
 import path from "node:path";
 import { AgentConfig } from "./types/agentConfig.js";
 import { configDotenv } from "dotenv";
+import { text } from "node:stream/consumers";
 
 configDotenv();
 
@@ -40,32 +41,32 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     const { tools } = await client.listTools();
     logger.info(chalk.green.bold(`🛠 Discovered ${tools.length} tools.`));
 
-    const BASE_URL = process.env.LM_BASE_URL || "http://localhost:1234/v1";
-    const API_KEY = process.env.LM_API_KEY || "lm-studio";
-
-    logger.info(chalk.blue(`🔗 Connecting to LM at ${BASE_URL} with model ${config.model}`));
-
     const openai = new OpenAI({
-        baseURL: BASE_URL,
-        apiKey: API_KEY
+        baseURL: process.env.LM_BASE_URL || "http://localhost:1234/v1",
+        apiKey: process.env.LM_API_KEY || "lm-studio"
     });
 
     const runtimeSystemPrompt = `${config.systemPrompt}
     
     RUNTIME CONTEXT:
-    - Your Skills Library is located at: ${absoluteSkillsPath}
-    - The Target Project you are fixing is at: ${targetPath}
-
-    When accessing skills, you MUST use the absolute path: ${absoluteSkillsPath}
-    `;
+    - The Target Project root is: .
+    - The Skills Library is: ./skills
+    
+    PATH RESOLUTION RULES:
+    1. Always use relative paths from the current directory.
+    2. To see the project, use list_files(path: ".")
+    3. To see skills, use list_files(path: "./skills")
+    4. To read a skill, use read_file(path: "./skills/security/jwt-fix/instructions.md")
+    5. NEVER use absolute paths starting with /Users/ or /github/workspace.
+    6. Parallel tool calls are encouraged to save turns.`;
 
     let messages: any[] = [
         { role: "system", content: runtimeSystemPrompt },
-        { role: "user", content: config.generatePrompt ? config.generatePrompt(targetPath, userPrompt) : userPrompt }
+        { role: "user", content: config.generatePrompt ? config.generatePrompt(".", userPrompt) : userPrompt }
     ];
 
     let turns = 0;
-    const maxTurns = 15;
+    const maxTurns = 40;
 
     while (turns < maxTurns) {
         turns++;
@@ -84,9 +85,15 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         if (message.tool_calls && message.tool_calls.length > 0) {
             for (const call of message.tool_calls) {
                 if (call.type === "function" && call.function) {
+
                     let parsedArgs: any = {};
+
                     try {
                         parsedArgs = JSON.parse(call.function.arguments || "{}");
+
+                        if (call.function.name === "secureWrite") {
+                            parsedArgs.code = parsedArgs.code || parsedArgs.content || parsedArgs.contents;
+                        }
                     } catch (e) {
                         parsedArgs = { raw: call.function.arguments };
                     }
@@ -100,17 +107,24 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                             arguments: parsedArgs
                         });
 
+                        const textOutput = (result.content as any[])
+                            ?.filter(c => c.type === "text")
+                            .map(c => c.text)
+                            .join("\n") || "✅ Success: Action performed.";
+
                         messages.push({
                             role: "tool",
                             tool_call_id: call.id,
-                            content: JSON.stringify(result.content)
+                            content: textOutput
                         });
+
+                        logger.info(chalk.cyan(`💬 [Tool Output]: ${textOutput}`));
                     } catch (toolErr: any) {
                         logger.error(chalk.red(`❌ Tool Error: ${toolErr.message}`));
                         messages.push({
                             role: "tool",
                             tool_call_id: call.id,
-                            content: JSON.stringify({ error: toolErr.message })
+                            content: `Error: ${toolErr.message}`
                         });
                     }
                 }
@@ -122,8 +136,6 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
             console.log(chalk.cyan(`\n🤖 AI Response:\n${message.content}`));
             break;
         }
-
-        break;
     }
 
     if (turns >= maxTurns) {
