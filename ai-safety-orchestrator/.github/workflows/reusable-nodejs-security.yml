@@ -16,6 +16,10 @@ on:
         LLMSTUDIO_URL:
           required: true
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   api-patch:
     runs-on: ubuntu-latest
