@@ -35,9 +35,14 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     const { tools } = await client.listTools();
     logger.info(chalk.green.bold(`🛠 Discovered ${tools.length} tools.`));
 
+    const BASE_URL = process.env.LM_BASE_URL || "http://localhost:1234/v1";
+    const API_KEY = process.env.LM_API_KEY || "lm-studio";
+
+    logger.info(chalk.blue(`🔗 Connecting to LM at ${BASE_URL} with model ${config.model}`));
+
     const openai = new OpenAI({
-        baseURL: process.env.LM_BASE_URL || "http://localhost:1234/v1",
-        apiKey: process.env.LM_API_KEY || "lm-studio"
+        baseURL: BASE_URL,
+        apiKey: API_KEY
     });
 
     let messages: any[] = [
