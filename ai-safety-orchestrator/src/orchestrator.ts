@@ -15,11 +15,16 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     logger.info(chalk.blue.bold("🚀 Starting Orchestrator..."));
 
     const serverPath = path.resolve(process.cwd(), "../mcp-security-server/build/index.js");
+    const absoluteSkillsPath = path.resolve(process.cwd(), "skills");
 
     const transport = new StdioClientTransport({
         command: "node",
         args: [serverPath],
-        env: { ...process.env, CWD: targetPath }
+        env: {
+            ...process.env,
+            CWD: targetPath,
+            SKILLS_PATH: absoluteSkillsPath
+        }
     });
 
     const client = new Client({ name: "safety-orchestrator", version: "1.0.0" }, { capabilities: {} });
@@ -45,8 +50,17 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         apiKey: API_KEY
     });
 
+    const runtimeSystemPrompt = `${config.systemPrompt}
+    
+    RUNTIME CONTEXT:
+    - Your Skills Library is located at: ${absoluteSkillsPath}
+    - The Target Project you are fixing is at: ${targetPath}
+
+    When accessing skills, you MUST use the absolute path: ${absoluteSkillsPath}
+    `;
+
     let messages: any[] = [
-        { role: "system", content: config.systemPrompt },
+        { role: "system", content: runtimeSystemPrompt },
         { role: "user", content: config.generatePrompt ? config.generatePrompt(targetPath, userPrompt) : userPrompt }
     ];
 
