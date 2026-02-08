@@ -6,10 +6,14 @@ on:
       vulnerability_description:
         required: true
         type: string
-    secrets:
-      API_API_KEY:
+      llm_url:
         required: true
-      LLMSTUDIO_URL:
+        type: string
+      llm_model_name:
+        required: true
+        type: string
+    secrets:
+      LM_API_KEY:
         required: true
 
 jobs:
@@ -40,6 +44,20 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
+      - name: Install and Build Tools
+        run: |
+          # 1. Install dependencies for the orchestrator
+          npm install
+          
+          # 2. Build the MCP Security Server so the orchestrator can find build/index.js
+          # We move to that directory, install its specific needs, and build it.
+          cd ../mcp-security-server
+          npm install
+          npm run build
+          
+          # 3. Return to the orchestrator directory for the next step
+          cd ../ai-safety-orchestrator
+
       - name: Run AI Fixer
         run: |
           npx tsx src/main.ts \
@@ -47,6 +65,7 @@ jobs:
             --target=${{ github.workspace }}/target-repo \
             --input="${{ inputs.vulnerability_description }}"
         env:
-          API_API_KEY: ${{ secrets.API_API_KEY }}
-          LLMSTUDIO_URL: ${{ secrets.LLMSTUDIO_URL }}
+          API_API_KEY: ${{ secrets.LM_API_KEY }}   
+          LLMSTUDIO_URL: ${{ inputs.llm_url }}
+          LM_MODEL_NAME: ${{ inputs.llm_model_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
