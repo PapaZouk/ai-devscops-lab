@@ -2,6 +2,8 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import db from "../utils/db.js";
+import { getLogger } from "@logtape/logtape";
+import chalk from "chalk";
 
 const execPromise = promisify(exec);
 
@@ -16,6 +18,8 @@ const ALLOWED_COMMANDS = [
     "npm install",
 ];
 
+const logger = getLogger("runCommand");
+
 export async function handleRunCommand(
     projectRoot: string,
     args: { command: string }
@@ -27,6 +31,7 @@ export async function handleRunCommand(
     const hasInjection = /[&|;]/.test(command);
 
     if (!isAllowed || hasInjection) {
+        logger.warn(chalk.red(`❌ COMMAND NOT ALLOWED: The command "${command}" is not in the list of allowed commands or contains disallowed characters.`));
         throw new McpError(
             ErrorCode.InvalidParams,
             `❌ COMMAND NOT ALLOWED: The command "${command}" is not in the list of allowed commands or contains disallowed characters.`
@@ -58,6 +63,7 @@ export async function handleRunCommand(
         };
     } catch (error: any) {
         const errorMessage = error.stdout || error.stderr || error.message || "Unknown error";
+        logger.error(chalk.red(`⚠️ The command ran, but the tests FAILED:\n\n${errorMessage}`));
 
         const stmt = db.prepare(`
             INSERT INTO audit_logs (file_path, action, status, biome_output) 

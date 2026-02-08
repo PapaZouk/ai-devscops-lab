@@ -2,6 +2,9 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import chalk from "chalk";
 import path from "path";
 import fs from "fs/promises";
+import { getLogger } from "@logtape/logtape";
+
+const logger = getLogger("readFile");
 
 export async function handleReadFile(
     projectRoot: string,
@@ -9,10 +12,10 @@ export async function handleReadFile(
 ) {
     const { path: relativePath } = args;
     const fullPath = path.resolve(projectRoot, relativePath);
-    console.log(chalk.blue.bold(`Starting readFile for: ${relativePath}`));
+    logger.info(chalk.blue.bold(`Starting readFile for: ${relativePath}`));
 
     if (!fullPath.startsWith(projectRoot)) {
-        console.log(chalk.yellow.bold(`⚠️ REJECTED readFile for: ${relativePath} (outside project root)`));
+        logger.warn(chalk.yellow.bold(`⚠️ REJECTED readFile for: ${relativePath} (outside project root)`));
         throw new McpError(
             ErrorCode.InvalidParams,
             "❌ ACCESS DENIED: Cannot read files outside the project root."
@@ -25,7 +28,7 @@ export async function handleReadFile(
         relativePath.includes(".env") ||
         relativePath.includes("security_audit.db")
     ) {
-        console.log(chalk.yellow.bold(`⚠️ REJECTED readFile for: ${relativePath} (restricted path)`));
+        logger.warn(chalk.yellow.bold(`⚠️ REJECTED readFile for: ${relativePath} (restricted path)`));
         throw new McpError(
             ErrorCode.InvalidParams,
             "❌ ACCESS DENIED: Reading from this path is not allowed."
@@ -46,7 +49,7 @@ export async function handleReadFile(
         if (error.code === "ENOENT") {
             throw new McpError(ErrorCode.InvalidParams, `❌ FILE NOT FOUND: ${relativePath} does not exist.`);
         }
-        console.error(chalk.red.bold(`Error in readFile for ${relativePath}: ${error.message}`));
+        logger.error(chalk.red.bold(`Error in readFile for ${relativePath}: ${error.message}`));
         throw new McpError(ErrorCode.InternalError, `Failed to read file: ${error.message}`);
     }
 }
