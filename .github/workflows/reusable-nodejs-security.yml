@@ -1,0 +1,52 @@
+name: Reusable AI Security Fixer
+
+on:
+  workflow_call:
+    inputs:
+      vulnerability_description:
+        required: true
+        type: string
+    secrets:
+      API_API_KEY:
+        required: true
+      LLMSTUDIO_URL:
+        required: true
+
+jobs:
+  api-patch:
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: ai-tools/ai-safety-orchestrator
+
+    steps:
+      - name: Checkout Target (Vulnerable) Repo
+        uses: actions/checkout@v4
+        with:
+          path: target-repo 
+
+      - name: Checkout AI Tools Repo
+        uses: actions/checkout@v4
+        with:
+          repository: PapaZouk/ai-devscops-lab
+          path: ai-tools
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Run AI Fixer
+        run: |
+          npx tsx src/main.ts \
+            --agent=security \
+            --target=${{ github.workspace }}/target-repo \
+            --input="${{ inputs.vulnerability_description }}"
+        env:
+          API_API_KEY: ${{ secrets.API_API_KEY }}
+          LLMSTUDIO_URL: ${{ secrets.LLMSTUDIO_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
