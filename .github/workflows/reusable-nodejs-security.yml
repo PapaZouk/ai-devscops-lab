@@ -52,7 +52,6 @@ jobs:
 
       - name: Run AI Fixer
         run: |
-          # Use absolute path for target to avoid confusion
           TARGET_PATH="${{ github.workspace }}/target-repo"
           
           npx tsx src/main.ts \
@@ -62,7 +61,7 @@ jobs:
         env:
           LM_API_KEY: ${{ secrets.LM_API_KEY }}   
           LM_BASE_URL: ${{ inputs.llm_url }}
-          # Ensure your main.ts/orchestrator actually reads this model name!
           LM_MODEL_NAME: ${{ inputs.llm_model_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SKILLS_PATH: "${{ github.workspace }}/ai-tools/ai-safety-orchestrator/skills"
           NODE_ENV: production
