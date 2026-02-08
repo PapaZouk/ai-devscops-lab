@@ -4,20 +4,9 @@ import { promisify } from "node:util";
 import db from "../utils/db.js";
 import { getLogger } from "@logtape/logtape";
 import chalk from "chalk";
+import path from "node:path";
 
 const execPromise = promisify(exec);
-
-const ALLOWED_COMMANDS = [
-    "npm run test",
-    "npm test",
-    "npm run build",
-    "npm build",
-    "npx biome",
-    "npx jest",
-    "npx vitest",
-    "npm install",
-];
-
 const logger = getLogger("runCommand");
 
 export async function handleRunCommand(
@@ -25,30 +14,27 @@ export async function handleRunCommand(
     args: { command: string }
 ) {
     const { command } = args;
-
-    const isAllowed = ALLOWED_COMMANDS.some(allowed => command.startsWith(allowed));
-
     const hasInjection = /[&|;]/.test(command);
 
-    if (!isAllowed || hasInjection) {
-        logger.warn(chalk.red(`❌ COMMAND NOT ALLOWED: The command "${command}" is not in the list of allowed commands or contains disallowed characters.`));
+    if (hasInjection) {
+        logger.warn(chalk.red(`❌ INJECTION DETECTED: ${command}`));
         throw new McpError(
             ErrorCode.InvalidParams,
-            `❌ COMMAND NOT ALLOWED: The command "${command}" is not in the list of allowed commands or contains disallowed characters.`
+            "❌ COMMAND REJECTED: Disallowed characters detected for security."
         );
     }
 
     try {
         const { stdout, stderr } = await execPromise(command, {
             cwd: projectRoot,
-            timeout: 60000
+            timeout: 60000,
+            env: { ...process.env, PROJECT_ROOT: projectRoot }
         });
 
         const output = stdout || stderr;
         const status = stderr ? 'COMMAND_WARNING' : 'COMMAND_SUCCESS';
 
-        const stmt =
-            db.prepare(`
+        const stmt = db.prepare(`
             INSERT INTO audit_logs (file_path, action, status, biome_output) 
             VALUES (?, ?, ?, ?)
         `);
@@ -57,13 +43,12 @@ export async function handleRunCommand(
         return {
             content: [{
                 type: "text" as const,
-                text: `✅ Command executed: ${command}\nOutput:\n${output}`
+                text: output
             }],
-            isError: !!stderr
+            isError: false
         };
     } catch (error: any) {
         const errorMessage = error.stdout || error.stderr || error.message || "Unknown error";
-        logger.error(chalk.red(`⚠️ The command ran, but the tests FAILED:\n\n${errorMessage}`));
 
         const stmt = db.prepare(`
             INSERT INTO audit_logs (file_path, action, status, biome_output) 
@@ -74,9 +59,9 @@ export async function handleRunCommand(
         return {
             content: [{
                 type: "text" as const,
-                text: `⚠️ The command ran, but the tests FAILED:\n\n${errorMessage}`
+                text: errorMessage
             }],
-            isError: false // Tell MCP the TOOL worked fine, even if the CODE it ran didn't.
+            isError: false
         };
     }
 }
