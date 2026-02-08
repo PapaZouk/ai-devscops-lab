@@ -6,12 +6,9 @@ import { getLogger } from "@logtape/logtape";
 import OpenAI from "openai";
 import chalk from "chalk";
 import { fileURLToPath } from "node:url";
-import { configDotenv } from "dotenv";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-configDotenv();
 
 const logger = getLogger("orchestrator");
 
@@ -38,8 +35,8 @@ export async function startOrchestrator(
     logger.info(chalk.green.bold("🚀 Orchestrator connected to MCP server"));
 
     const lmStudio = new OpenAI({
-        baseURL: process.env.LM_STUDIO_URL || "http://localhost:1234/v1",
-        apiKey: process.env.LM_STUDIO_API_KEY || "lm-studio"
+        baseURL: process.env.LM_BASE_URL || "http://localhost:1234/v1",
+        apiKey: process.env.LM_API_KEY || "lm-studio"
     });
 
     const { tools } = await mcpClient.listTools();
@@ -60,7 +57,7 @@ export async function startOrchestrator(
     ];
 
     let stepCount = 0;
-    const maxAttempts = config.maxSteps || 10;
+    const maxAttempts = config.maxSteps || 15;
 
     while (stepCount < maxAttempts) {
         stepCount++;
@@ -74,6 +71,7 @@ export async function startOrchestrator(
         });
 
         const aiMessage = response.choices[0].message;
+        logger.info(chalk.gray(`💬 LM Message received`));
         const content = aiMessage.content || "";
 
         if (content) logger.info(chalk.gray(`💬 LM Response: ${content}`));

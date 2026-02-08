@@ -120,4 +120,28 @@ export default function registerTools(server: McpServer, projectRoot: string) {
             return await handleRunCommand(projectRoot, args);
         }
     );
+
+    server.registerTool(
+        "git_manager",
+        {
+            title: "Git Manager",
+            description: "Performs Git operations like creating branches, committing changes, and pushing to remote.",
+            inputSchema: {
+                action: z.enum(["create_branch", "commit_changes", "push_to_remote"]).describe("Git action to perform"),
+                branchName: z.string().optional().describe("Name of the branch to create (required for create_branch)"),
+                commitMessage: z.string().optional().describe("Commit message (required for commit_changes)"),
+                remoteName: z.string().optional().describe("Remote name to push to (required for push_to_remote)")
+            }
+        },
+        async (args) => {
+            const targetPath = projectRoot; // Git operations will be performed in the project root
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: `Git action '${args.action}' executed successfully (this is a placeholder response).`
+                }],
+                isError: false
+            }
+        }
+    );
 }
