@@ -5,10 +5,10 @@ import { handleListFiles } from "../tools/listFiles.js";
 import { handleRunCommand } from "../tools/run_command.js";
 import z from "zod";
 import db from "../utils/db.js";
+import { simpleGit, SimpleGit } from "simple-git";
 
 export default function registerTools(server: McpServer, projectRoot: string) {
-    server.registerTool(
-        "secure_write",
+    server.registerTool("secure_write",
         {
             title: "Secure Write & Lint",
             description: "Writes code to a file after verifying paths and linting with Biome.",
@@ -30,8 +30,7 @@ export default function registerTools(server: McpServer, projectRoot: string) {
         }
     );
 
-    server.registerTool(
-        "get_audit_logs",
+    server.registerTool("get_audit_logs",
         {
             title: "Get Audit Logs",
             description: "Retrieves the history of security remediations and linting status from the local database.",
@@ -64,8 +63,7 @@ export default function registerTools(server: McpServer, projectRoot: string) {
         }
     )
 
-    server.registerTool(
-        "read_file",
+    server.registerTool("read_file",
         {
             title: "Read File",
             description: "Reads the content of a file within the project directory for analysis.",
@@ -85,8 +83,7 @@ export default function registerTools(server: McpServer, projectRoot: string) {
         }
     );
 
-    server.registerTool(
-        "list_files",
+    server.registerTool("list_files",
         {
             title: "List Directory Contents",
             description: "Lists files and directories within a specific path to help explore the project structure.",
@@ -107,8 +104,7 @@ export default function registerTools(server: McpServer, projectRoot: string) {
         }
     );
 
-    server.registerTool(
-        "run_command",
+    server.registerTool("run_command",
         {
             title: "Execute Secure Commands",
             description: "Runs allowed system commands like 'npm test' to verify code changes.",
@@ -121,26 +117,92 @@ export default function registerTools(server: McpServer, projectRoot: string) {
         }
     );
 
-    server.registerTool(
-        "git_manager",
+    server.registerTool("git_manager",
         {
             title: "Git Manager",
             description: "Performs Git operations like creating branches, committing changes, and pushing to remote.",
             inputSchema: {
-                action: z.enum(["create_branch", "commit_changes", "push_to_remote"]).describe("Git action to perform"),
+                action: z.enum(["status", "create_branch", "commit_changes", "push_to_remote", "create_pull_request"]).describe("Git action to perform"),
                 branchName: z.string().optional().describe("Name of the branch to create (required for create_branch)"),
                 commitMessage: z.string().optional().describe("Commit message (required for commit_changes)"),
                 remoteName: z.string().optional().describe("Remote name to push to (required for push_to_remote)")
             }
         },
         async (args) => {
-            const targetPath = projectRoot; // Git operations will be performed in the project root
-            return {
-                content: [{
-                    type: "text" as const,
-                    text: `Git action '${args.action}' executed successfully (this is a placeholder response).`
-                }],
-                isError: false
+            const git: SimpleGit = simpleGit(projectRoot);
+            try {
+                switch (args.action) {
+                    case "status":
+                        const status = await git.status();
+                        return {
+                            content: [{
+                                type: "text" as const,
+                                text: JSON.stringify(status, null, 2)
+                            }],
+                            isError: false
+                        };
+                    case "create_branch":
+                        if (!args.branchName) {
+                            throw new Error("branchName is required for create_branch action");
+                        }
+                        await git.checkoutLocalBranch(args.branchName);
+                        return {
+                            content: [{
+                                type: "text" as const,
+                                text: `Branch '${args.branchName}' created and checked out successfully.`
+                            }],
+                            isError: false
+                        };
+                    case "commit_changes":
+                        if (!args.commitMessage) {
+                            throw new Error("commitMessage is required for commit_changes action");
+                        }
+                        await git.add(".");
+                        await git.commit(args.commitMessage);
+                        return {
+                            content: [{
+                                type: "text" as const,
+                                text: `Changes committed with message: '${args.commitMessage}'.`
+                            }],
+                            isError: false
+                        };
+                    case "push_to_remote":
+                        if (!args.remoteName) {
+                            throw new Error("remoteName is required for push_to_remote action");
+                        }
+                        await git.push(args.remoteName);
+                        return {
+                            content: [{
+                                type: "text" as const,
+                                text: `Changes pushed to remote '${args.remoteName}' successfully.`
+                            }],
+                            isError: false
+                        };
+                    case "create_pull_request":
+                        if (!args.commitMessage) throw new Error("Title/Message required");
+
+                        const { execSync } = require('child_process');
+                        const prUrl = execSync(
+                            `gh pr create --title "${args.commitMessage}" --body "Automated Security Remediation" --base main`
+                        ).toString();
+                        return {
+                            content: [{
+                                type: "text" as const,
+                                text: `Pull request created successfully: ${prUrl}`
+                            }],
+                            isError: false
+                        };
+                    default:
+                        throw new Error(`Unsupported Git action: ${args.action}`);
+                }
+            } catch (error: any) {
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `Git operation failed: ${error.message}`
+                    }],
+                    isError: true
+                };
             }
         }
     );
