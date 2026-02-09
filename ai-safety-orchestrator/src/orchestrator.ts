@@ -4,27 +4,51 @@ import { OpenAI } from "openai";
 import { getLogger } from "@logtape/logtape";
 import chalk from "chalk";
 import path from "node:path";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { AgentConfig } from "./types/agentConfig.js";
 import { configDotenv } from "dotenv";
-import { text } from "node:stream/consumers";
 
 configDotenv();
 
 const logger = getLogger("orchestrator");
 
+
 export async function startOrchestrator(config: AgentConfig, targetPath: string, userPrompt: string) {
     logger.info(chalk.blue.bold("🚀 Starting Orchestrator..."));
 
     const serverPath = path.resolve(process.cwd(), "../mcp-security-server/build/index.js");
-    const absoluteSkillsPath = path.resolve(process.cwd(), "skills");
+    const orchestratorRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+    const skillsPath = path.resolve(process.cwd(), "skills");
+
+    // print skills directory contents for debugging
+    logger.info(chalk.blue.bold(`📁 Skills Directory: ${skillsPath}`));
+    try {
+        const skillFiles = await fs.promises.readdir(skillsPath);
+        logger.info(chalk.blue(`🔍 Found ${skillFiles.length} skills:`));
+        skillFiles.forEach(file => logger.info(chalk.gray(`- ${file}`)));
+    } catch (err) {
+        logger.error(
+            chalk.red(
+                `❌ Failed to read skills directory: ${
+                    err instanceof Error ? err.message : String(err)
+                }`
+            )
+        );
+    }
+
+    logger.info(chalk.blue(`📁 Target Project: ${targetPath}`));
+    logger.info(chalk.blue(`📁 Skills Library: ${skillsPath}`));
 
     const transport = new StdioClientTransport({
         command: "node",
         args: [serverPath],
         env: {
             ...process.env,
+            PROJECT_ROOT: path.resolve(targetPath),
             CWD: targetPath,
-            SKILLS_PATH: absoluteSkillsPath
+            SKILLS_PATH: skillsPath
         }
     });
 
@@ -41,9 +65,13 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     const { tools } = await client.listTools();
     logger.info(chalk.green.bold(`🛠 Discovered ${tools.length} tools.`));
 
+    const url = process.env.LM_BASE_URL || "http://localhost:1234/v1";
+    const apiKey = process.env.LM_API_KEY || "lm-studio";
+    logger.info(chalk.blue(`Using LLM at ${url} with model ${config.model}`));
+
     const openai = new OpenAI({
-        baseURL: process.env.LM_BASE_URL || "http://localhost:1234/v1",
-        apiKey: process.env.LM_API_KEY || "lm-studio"
+        baseURL: url,
+        apiKey: apiKey
     });
 
     const runtimeSystemPrompt = `${config.systemPrompt}
@@ -74,7 +102,9 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         const response = await openai.chat.completions.create({
             model: config.model,
             messages,
-            tools: tools.map(t => ({ type: "function", function: t }))
+            tools: tools.map(t => ({ type: "function", function: t })),
+            tool_choice: "auto",
+            temperature: 0,
         });
 
         const message = response.choices[0].message;
@@ -85,15 +115,9 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         if (message.tool_calls && message.tool_calls.length > 0) {
             for (const call of message.tool_calls) {
                 if (call.type === "function" && call.function) {
-
                     let parsedArgs: any = {};
-
                     try {
                         parsedArgs = JSON.parse(call.function.arguments || "{}");
-
-                        if (call.function.name === "secureWrite") {
-                            parsedArgs.code = parsedArgs.code || parsedArgs.content || parsedArgs.contents;
-                        }
                     } catch (e) {
                         parsedArgs = { raw: call.function.arguments };
                     }
@@ -107,24 +131,17 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                             arguments: parsedArgs
                         });
 
-                        const textOutput = (result.content as any[])
-                            ?.filter(c => c.type === "text")
-                            .map(c => c.text)
-                            .join("\n") || "✅ Success: Action performed.";
-
                         messages.push({
                             role: "tool",
                             tool_call_id: call.id,
-                            content: textOutput
+                            content: JSON.stringify(result.content)
                         });
-
-                        logger.info(chalk.cyan(`💬 [Tool Output]: ${textOutput}`));
                     } catch (toolErr: any) {
                         logger.error(chalk.red(`❌ Tool Error: ${toolErr.message}`));
                         messages.push({
                             role: "tool",
                             tool_call_id: call.id,
-                            content: `Error: ${toolErr.message}`
+                            content: JSON.stringify({ error: toolErr.message })
                         });
                     }
                 }
@@ -133,7 +150,7 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         }
 
         if (message.content) {
-            console.log(chalk.cyan(`\n🤖 AI Response:\n${message.content}`));
+            logger.info(chalk.cyan(`\n🤖 AI Final Response:\n${message.content}`));
             break;
         }
     }

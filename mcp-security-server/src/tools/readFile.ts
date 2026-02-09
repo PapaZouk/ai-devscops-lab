@@ -12,32 +12,19 @@ export async function handleReadFile(
 ) {
     const { path: requestedPath } = args;
     const skillsPath = process.env.SKILLS_PATH ? path.resolve(process.env.SKILLS_PATH) : "";
+    const fullPath = path.resolve(projectRoot, requestedPath);
 
-    let physicalPath: string;
+    logger.info(chalk.blue.bold(`Starting readFile for: ${requestedPath}`));
 
-    // 1. Intercept Virtual Skills Path
-    if (requestedPath.startsWith("./skills") || requestedPath.startsWith("skills")) {
-        if (!skillsPath) {
-            throw new McpError(ErrorCode.InvalidParams, "Skills library path not configured.");
-        }
-        const relativePart = requestedPath.replace(/^(\.\/)?skills/, "");
-        physicalPath = path.resolve(skillsPath, relativePart.startsWith("/") ? relativePart.slice(1) : relativePart);
-    } else {
-        physicalPath = path.resolve(projectRoot, requestedPath);
-    }
-
-    logger.info(chalk.blue.bold(`📖 Reading file: ${requestedPath} (Physical: ${physicalPath})`));
-
-    // 2. Boundary and Restriction Checks
-    const resolvedProjectRoot = path.resolve(projectRoot);
-    const resolvedSkillsPath = skillsPath ? path.resolve(skillsPath) : "";
-
-    const isInsideProject = physicalPath.startsWith(resolvedProjectRoot);
-    const isInsideSkills = resolvedSkillsPath && physicalPath.startsWith(resolvedSkillsPath);
+    const isInsideProject = fullPath.startsWith(path.resolve(projectRoot));
+    const isInsideSkills = skillsPath && fullPath.startsWith(skillsPath);
 
     if (!isInsideProject && !isInsideSkills) {
-        logger.warn(chalk.yellow.bold(`⚠️ REJECTED: ${physicalPath} is outside allowed boundaries.`));
-        throw new McpError(ErrorCode.InvalidParams, "❌ ACCESS DENIED: Path outside project and skills library.");
+        logger.warn(chalk.yellow.bold(`⚠️ REJECTED: ${requestedPath} is outside allowed boundaries.`));
+        throw new McpError(
+            ErrorCode.InvalidParams,
+            "❌ ACCESS DENIED: Path is outside project and skills library."
+        );
     }
 
     if (
@@ -46,12 +33,11 @@ export async function handleReadFile(
         requestedPath.includes(".env")
     ) {
         logger.warn(chalk.yellow.bold(`⚠️ REJECTED restricted path: ${requestedPath}`));
-        throw new McpError(ErrorCode.InvalidParams, "❌ ACCESS DENIED: Restricted file type.");
+        throw new McpError(ErrorCode.InvalidParams, "❌ ACCESS DENIED: Restricted path.");
     }
 
-    // 3. Execution
     try {
-        const content = await fs.readFile(physicalPath, "utf-8");
+        const content = await fs.readFile(fullPath, "utf-8");
         return {
             content: [{
                 type: "text" as const,

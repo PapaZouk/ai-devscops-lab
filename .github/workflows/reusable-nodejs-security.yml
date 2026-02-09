@@ -50,6 +50,23 @@ jobs:
           npm install
           npm run build
 
+      - name: Link Skills to Target
+        run: ln -s ${{ github.workspace }}/ai-tools/ai-safety-orchestrator/skills ${{ github.workspace }}/target-repo/skills
+
+      - name: Path Pre-flight Check
+        run: |
+          echo "::group::Environment Path Validation"
+          # Define paths relative to the actual workspace
+          export PROJECT_ROOT="${{ github.workspace }}"
+          export SKILLS_PATH="${{ github.workspace }}/ai-tools/ai-safety-orchestrator/skills"
+          
+          chmod +x "$SKILLS_PATH/debug-tools/debug-paths.sh"
+          "$SKILLS_PATH/debug-tools/debug-paths.sh"
+          echo "::endgroup::"
+        env:
+          PROJECT_ROOT: "${{ github.workspace }}"
+          SKILLS_PATH: "${{ github.workspace }}/ai-tools/ai-safety-orchestrator/skills"
+
       - name: Run AI Fixer
         run: |
           TARGET_PATH="${{ github.workspace }}/target-repo"
@@ -59,10 +76,13 @@ jobs:
             --target=$TARGET_PATH \
             --input="${{ inputs.vulnerability_description }}"
         env:
-          LM_API_KEY: ${{ secrets.LM_API_KEY }}   
+          # Modular anchors for the MCP Server
+          PROJECT_ROOT: "${{ github.workspace }}"
+          SKILLS_PATH: "${{ github.workspace }}/ai-tools/ai-safety-orchestrator/skills"
+          CWD: "${{ github.workspace }}/target-repo"
+          
+          # LLM Config
+          LM_API_KEY: ${{ secrets.LM_API_KEY }}
           LM_BASE_URL: ${{ inputs.llm_url }}
           LM_MODEL_NAME: ${{ inputs.llm_model_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CWD: "${{ github.workspace }}/target-repo"
-          SKILLS_PATH: "${{ github.workspace }}/ai-tools/ai-safety-orchestrator/skills"
-          NODE_ENV: production

@@ -1,5 +1,6 @@
 import { configDotenv } from "dotenv";
 import { AgentConfig } from "../types/agentConfig.js";
+import path from "node:path";
 
 configDotenv();
 
@@ -30,9 +31,9 @@ STRICT STANDARDS:
 
   generatePrompt: (target, issue) =>
     `CONTEXT:
-    - Target Project Directory: ${target}
+    - Target Project Directory: ${path.basename(target)} (Root-level folder)
     - Skills Library: ./skills
     - Task: Fix the following vulnerability: ${issue}
     
-    GOAL: Apply the correct skill, patch the code, and run the verification script.`
+    GOAL: Use the tools to explore the target project directory, apply the correct skill, and verify the fix.`
 };
