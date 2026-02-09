@@ -62,13 +62,25 @@ server.registerTool(
         description: "Writes code to a file. Used for applying security patches.",
         inputSchema: z.object({
             path: z.string().describe("Relative path to the file"),
-            code: z.string().describe("Full content to be written"),
-            isTest: z.boolean().optional().describe("Flag if this is a test file")
+            code: z.string().optional(),
+            content: z.string().optional(),
+            isTest: z.boolean().optional()
         })
     },
     async (args) => {
+        // Resolve which property the AI used
+        const finalCode = args.code || args.content;
+        if (!finalCode) {
+            return { content: [{ type: "text", text: "Error: Missing 'code' or 'content' field." }], isError: true };
+        }
+
         logger.info(chalk.magenta(`Operation: write_file | File: ${args.path}`));
-        const result = await handleSecureWrite(PROJECT_ROOT, args);
+        const result = await handleSecureWrite(PROJECT_ROOT, {
+            path: args.path,
+            code: finalCode,
+            isTest: args.isTest
+        });
+
         return {
             content: result.content.map(c => ({ type: "text" as const, text: c.text }))
         };
@@ -80,12 +92,32 @@ server.registerTool(
     {
         description: "Executes shell commands, build tools, or verification scripts found in skills.",
         inputSchema: z.object({
-            command: z.string().describe("The full command string to execute")
+            command: z.string().optional(),
+            cmd: z.any().optional()
         })
     },
     async (args) => {
-        logger.info(chalk.yellow(`Operation: run_command | Cmd: ${args.command}`));
-        const result = await handleRunCommand(PROJECT_ROOT, args);
+        // 1. Resolve the input (handle both 'command' and 'cmd')
+        let rawCmd = args.command || args.cmd;
+
+        // 2. If the AI sent an array (e.g. ["bash", "-lc", "..."]), join it
+        if (Array.isArray(rawCmd)) {
+            rawCmd = rawCmd.join(" ");
+        }
+
+        if (!rawCmd || typeof rawCmd !== 'string') {
+            return {
+                content: [{ type: "text", text: "Error: No command string provided." }],
+                isError: true
+            };
+        }
+
+        logger.info(chalk.yellow(`Operation: run_command | Cmd: ${rawCmd}`));
+
+        // 3. Call your modular handler
+        const result = await handleRunCommand(PROJECT_ROOT, { command: rawCmd });
+
+        // 4. Ensure we return the correct MCP shape
         return {
             content: result.content.map(c => ({ type: "text" as const, text: c.text }))
         };
