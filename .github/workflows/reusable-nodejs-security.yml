@@ -22,7 +22,7 @@ jobs:
     
     defaults:
       run:
-        working-directory: ai-tools/ai-safety-orchestrator
+        working-directory: ai-tools/ai-app-doctor
 
     steps:
       - name: Checkout Target (Vulnerable) Repo
@@ -50,22 +50,34 @@ jobs:
           npm install
           npm run build
 
-      - name: Link Skills to Target
-        run: ln -s ${{ github.workspace }}/ai-tools/ai-safety-orchestrator/skills ${{ github.workspace }}/target-repo/skills
+      - name: Copy Skills to Target
+        run: |
+          # Remove existing link if it exists
+          rm -rf ${{ github.workspace }}/target-repo/skills
+          # Copy the actual directory so there's no symlink confusion
+          cp -r ${{ github.workspace }}/ai-tools/ai-app-doctor/skills ${{ github.workspace }}/target-repo/skills
+          # Grant permissions
+          chmod -R +x ${{ github.workspace }}/target-repo/skills
+
+      - name: Prep Skills
+        run: |
+          echo "🧼 Sterilizing instruments: granting +x to all skill scripts..."
+          find ${{ github.workspace }}/ai-tools/ai-app-doctor/skills -name "*.sh" -exec chmod +x {} +
+        shell: bash
 
       - name: Path Pre-flight Check
         run: |
           echo "::group::Environment Path Validation"
           # Define paths relative to the actual workspace
           export PROJECT_ROOT="${{ github.workspace }}"
-          export SKILLS_PATH="${{ github.workspace }}/ai-tools/ai-safety-orchestrator/skills"
+          export SKILLS_PATH="${{ github.workspace }}/ai-tools/ai-app-doctor/skills"
           
           chmod +x "$SKILLS_PATH/debug-tools/debug-paths.sh"
           "$SKILLS_PATH/debug-tools/debug-paths.sh"
           echo "::endgroup::"
         env:
           PROJECT_ROOT: "${{ github.workspace }}"
-          SKILLS_PATH: "${{ github.workspace }}/ai-tools/ai-safety-orchestrator/skills"
+          SKILLS_PATH: "${{ github.workspace }}/ai-tools/ai-app-doctor/skills"
 
       - name: Run AI Fixer
         run: |
@@ -78,7 +90,7 @@ jobs:
         env:
           # Modular anchors for the MCP Server
           PROJECT_ROOT: "${{ github.workspace }}"
-          SKILLS_PATH: "${{ github.workspace }}/ai-tools/ai-safety-orchestrator/skills"
+          SKILLS_PATH: "${{ github.workspace }}/ai-tools/ai-app-doctor/skills"
           CWD: "${{ github.workspace }}/target-repo"
           
           # LLM Config

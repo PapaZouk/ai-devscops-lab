@@ -8,6 +8,7 @@ import { handleListFiles } from "./tools/listFiles.js";
 import { handleSecureWrite } from "./tools/secureWrite.js";
 import { handleRunCommand } from "./tools/run_command.js";
 import chalk from "chalk";
+import { handleGitDiff } from "./tools/gitDiff.js";
 
 await setupLogger();
 const logger = getLogger("mcp-server");
@@ -41,13 +42,21 @@ server.registerTool(
     {
         description: "Lists files and directories to help explore the project or the skills library.",
         inputSchema: z.object({
-            path: z.string().describe("Path to list (use '.' for workbench root)"),
+            path: z.string().optional().describe("Path to list"),
+            directory: z.string().optional().describe("Alias for path"),
             recursive: z.boolean().optional().default(false)
         })
     },
     async (args) => {
-        logger.debug(`Operation: list_files | Path: ${args.path}`);
-        const result = await handleListFiles(PROJECT_ROOT, args); return {
+        const finalPath = args.path || args.directory || ".";
+        logger.debug(`Operation: list_files | Path: ${finalPath}`);
+
+        const result = await handleListFiles(PROJECT_ROOT, {
+            path: finalPath,
+            recursive: args.recursive
+        });
+
+        return {
             content: [{
                 type: "text" as const,
                 text: result.content[0].text
@@ -118,6 +127,21 @@ server.registerTool(
         const result = await handleRunCommand(PROJECT_ROOT, { command: rawCmd });
 
         // 4. Ensure we return the correct MCP shape
+        return {
+            content: result.content.map(c => ({ type: "text" as const, text: c.text }))
+        };
+    }
+);
+
+server.registerTool(
+    "git_diff",
+    {
+        description: "Shows unstaged changes in the project. Use this to verify your patch before finalizing.",
+        inputSchema: z.object({})
+    },
+    async () => {
+        logger.debug(`Operation: git_diff`);
+        const result = await handleGitDiff(PROJECT_ROOT);
         return {
             content: result.content.map(c => ({ type: "text" as const, text: c.text }))
         };

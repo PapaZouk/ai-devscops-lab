@@ -22,7 +22,6 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
 
     const skillsPath = path.resolve(process.cwd(), "skills");
 
-    // print skills directory contents for debugging
     logger.info(chalk.blue.bold(`📁 Skills Directory: ${skillsPath}`));
     try {
         const skillFiles = await fs.promises.readdir(skillsPath);
@@ -31,8 +30,7 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     } catch (err) {
         logger.error(
             chalk.red(
-                `❌ Failed to read skills directory: ${
-                    err instanceof Error ? err.message : String(err)
+                `❌ Failed to read skills directory: ${err instanceof Error ? err.message : String(err)
                 }`
             )
         );
@@ -52,7 +50,7 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         }
     });
 
-    const client = new Client({ name: "safety-orchestrator", version: "1.0.0" }, { capabilities: {} });
+    const client = new Client({ name: "ai-app-doctor", version: "1.0.0" }, { capabilities: {} });
 
     try {
         await client.connect(transport);
@@ -86,7 +84,9 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     3. To see skills, use list_files(path: "./skills")
     4. To read a skill, use read_file(path: "./skills/security/jwt-fix/instructions.md")
     5. NEVER use absolute paths starting with /Users/ or /github/workspace.
-    6. Parallel tool calls are encouraged to save turns.`;
+    6. Parallel tool calls are encouraged to save turns.
+    
+    `;
 
     let messages: any[] = [
         { role: "system", content: runtimeSystemPrompt },
