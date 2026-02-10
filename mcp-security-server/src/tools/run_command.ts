@@ -30,7 +30,7 @@ export async function handleRunCommand(
     const skillsPath = process.env.SKILLS_PATH ? path.resolve(process.env.SKILLS_PATH) : "";
     let commandToExecute = "";
 
-    // 1. Build the command based on provided arguments
+    // Build the command based on provided arguments
     if (args.path) {
         let scriptPhysicalPath: string;
         if (args.path.startsWith("./skills") || args.path.startsWith("skills")) {
@@ -55,11 +55,8 @@ export async function handleRunCommand(
         throw new McpError(ErrorCode.InvalidParams, "Either 'command' or 'path' must be provided.");
     }
 
-    // 2. Security Check (Preserved from your version)
-    // Note: We allow ';' only if it's inside the built command for internal logic, 
-    // but generally keeping your regex for safety.
     const hasInjection = /[&|;]/.test(commandToExecute);
-    if (hasInjection && !args.path) { // Relax slightly for path-based execution if needed, or keep strict
+    if (hasInjection && !args.path) {
         logger.warn(chalk.red(`❌ INJECTION DETECTED: ${commandToExecute}`));
         throw new McpError(
             ErrorCode.InvalidParams,
@@ -74,7 +71,11 @@ export async function handleRunCommand(
         const { stdout, stderr } = await execPromise(commandToExecute, {
             cwd: projectRoot,
             timeout: 60000,
-            env: { ...process.env, PROJECT_ROOT: projectRoot }
+            env: {
+                ...process.env,
+                PROJECT_ROOT: projectRoot,
+                GITHUB_TOKEN: process.env.GITHUB_TOKEN || "",
+            }
         });
 
         const output = stdout || stderr;

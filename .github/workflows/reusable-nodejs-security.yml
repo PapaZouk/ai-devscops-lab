@@ -16,6 +16,10 @@ on:
       LM_API_KEY:
         required: true
 
+permissions:
+  contents: write 
+  pull-requests: write
+
 jobs:
   api-patch:
     runs-on: ubuntu-latest

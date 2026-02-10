@@ -86,6 +86,10 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     5. NEVER use absolute paths starting with /Users/ or /github/workspace.
     6. Parallel tool calls are encouraged to save turns.
     
+    ## MANDATORY FINAL STEP: Clinical Delivery
+    Once a fix is verified (verify.sh passes), you MUST:
+    1.  **Read** 'skills/git/delivery/instructions.md'.
+    2.  **Verify** delivery readiness by running 'skills/git/delivery/verify.sh'.
     `;
 
     let messages: any[] = [

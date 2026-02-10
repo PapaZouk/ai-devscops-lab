@@ -99,10 +99,13 @@ server.registerTool(
 server.registerTool(
     "run_command",
     {
-        description: "Executes shell commands, build tools, or verification scripts found in skills.",
+        description: "Executes a command in the workbench. " +
+            "FOR SCRIPTS: Use 'path' and 'args'. Do NOT use 'bash -lc' or shell redirects (>, |) as they are rejected. " +
+            "DELIVERY: Once a security fix is verified, you MUST use this tool to execute the Git & Pull Request protocol (git checkout, commit, gh pr create).",
         inputSchema: z.object({
             command: z.string().optional(),
-            cmd: z.any().optional()
+            cmd: z.any().optional(),
+            args: z.array(z.string()).optional()
         })
     },
     async (args) => {
