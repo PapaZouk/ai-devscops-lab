@@ -16,5 +16,6 @@ export const RUNTIME_INSTRUCTIONS = `
 ## 🚀 FINAL DELIVERY (MANDATORY)
 After successful verification, you MUST:
 1. Initialize the Git protocol using 'run_command' with 'path: "./skills/git/delivery/verify.sh"' and 'args: []'
-2. Follow 'skills/git/delivery/instructions.md' to finalize the PR.
+2. Read 'skills/git/delivery/instructions.md' and execute its steps to finalize the PR.
+3. Do NOT re-run delivery verification once it succeeds; proceed to branch, commit, push, and PR creation.
 `;
