@@ -8,9 +8,19 @@ const logger = getLogger("readFile");
 
 export async function handleReadFile(
     projectRoot: string,
-    args: { path: string }
+    args: { path?: string }
 ) {
-    const { path: requestedPath } = args;
+    const requestedPath = args.path;
+
+    if (!requestedPath) {
+        return {
+            content: [{
+                type: "text" as const,
+                text: "Error: Missing 'path'. Provide a file path to read."
+            }],
+            isError: true
+        };
+    }
     const skillsPath = process.env.SKILLS_PATH ? path.resolve(process.env.SKILLS_PATH) : "";
     const fullPath = path.resolve(projectRoot, requestedPath);
 

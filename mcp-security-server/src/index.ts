@@ -26,12 +26,24 @@ server.registerTool(
     {
         description: "Reads the content of a file from the workbench or the skills library.",
         inputSchema: z.object({
-            path: z.string().describe("The absolute or relative path to the file")
+            path: z.string().optional().describe("The absolute or relative path to the file")
         })
     },
     async (args) => {
-        logger.debug(`Operation: read_file | Path: ${args.path}`);
-        const result = await handleReadFile(PROJECT_ROOT, args);
+        const requestedPath = args?.path;
+        logger.debug(`Operation: read_file | Path: ${requestedPath ?? "(missing)"}`);
+
+        if (!requestedPath) {
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: "Error: Missing 'path'. Provide a file path to read."
+                }],
+                isError: true
+            };
+        }
+
+        const result = await handleReadFile(PROJECT_ROOT, { path: requestedPath });
         return {
             content: result.content.map(c => ({ type: "text" as const, text: c.text }))
         };
@@ -49,12 +61,12 @@ server.registerTool(
         })
     },
     async (args) => {
-        const finalPath = args.path || args.directory || ".";
+        const finalPath = args?.path || args?.directory || ".";
         logger.debug(`Operation: list_files | Path: ${finalPath}`);
 
         const result = await handleListFiles(PROJECT_ROOT, {
             path: finalPath,
-            recursive: args.recursive
+            recursive: args?.recursive
         });
 
         return {
@@ -106,7 +118,8 @@ server.registerTool(
         inputSchema: z.object({
             command: z.string().optional(),
             cmd: z.any().optional(),
-            args: z.array(z.string()).optional()
+            args: z.array(z.string()).optional(),
+            path: z.string().optional()
         })
     },
     async (args) => {
@@ -118,17 +131,25 @@ server.registerTool(
             rawCmd = rawCmd.join(" ");
         }
 
-        if (!rawCmd || typeof rawCmd !== 'string') {
+        if ((!rawCmd || typeof rawCmd !== 'string') && !args.path) {
             return {
                 content: [{ type: "text", text: "Error: No command string provided." }],
                 isError: true
             };
         }
 
-        logger.info(chalk.yellow(`Operation: run_command | Cmd: ${rawCmd}`));
+        logger.info(
+            chalk.yellow(
+                `Operation: run_command | Cmd: ${rawCmd ?? "(path mode)"}${args.path ? ` | Path: ${args.path}` : ""}`
+            )
+        );
 
         // 3. Call your modular handler
-        const result = await handleRunCommand(PROJECT_ROOT, { command: rawCmd });
+        const result = await handleRunCommand(PROJECT_ROOT, {
+            command: typeof rawCmd === "string" ? rawCmd : undefined,
+            path: args.path,
+            args: args.args
+        });
 
         // 4. Ensure we return the correct MCP shape
         return {

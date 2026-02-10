@@ -18,7 +18,13 @@ export async function handleMemory(
     try {
         if (action === "store") {
             if (!key || !value) {
-                throw new McpError(ErrorCode.InvalidParams, "❌ Key and Value are required for storing memory.");
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: "Error: 'store' requires both key and value. Example: key=\"target_file\", value=\"src/services/authService.ts\"."
+                    }],
+                    isError: true
+                };
             }
 
             logger.info(chalk.magenta.bold(`🧠 Storing memory: [${key}]`));

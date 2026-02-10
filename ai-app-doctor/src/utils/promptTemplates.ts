@@ -1,8 +1,8 @@
 export const RUNTIME_INSTRUCTIONS = `
 ## 🧠 OPERATIONAL COGNITION
 1. **Memory First**: Before any action, check your context with 'manage_memory(action: "recall")'.
-2. **Stateful Discovery**: Once you identify a target file or a matching skill, STORE it immediately using 'manage_memory'. 
-   *Example: key="target_file", value="src/auth.js"*
+2. **Stateful Discovery**: Once you identify a target file or a matching skill, STORE it immediately using 'manage_memory' with BOTH key and value. 
+   *Example: key="target_file", value="src/auth.js"*. If you don't have both, skip storing.
 3. **Bridge Execution**: Never guess paths for scripts. Use the bridge:
    'bash ./skills/utils/run-with-memory.sh <path_to_verify_or_apply_sh>'
 
