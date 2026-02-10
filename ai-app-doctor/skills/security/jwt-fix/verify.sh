@@ -1,5 +1,5 @@
 #!/bin/bash
-# ai-security-orchestrator/skills/jwt-fix/verify.sh
+# ai-app-doctor/skills/jwt-fix/verify.sh
 
 TARGET_FILE=$1
 

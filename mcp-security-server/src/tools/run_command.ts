@@ -7,22 +7,32 @@ import chalk from "chalk";
 import path from "node:path";
 
 const execPromise = promisify(exec);
-const logger = getLogger("runCommand");
+const logger = getLogger("run_command");
 
 export async function handleRunCommand(
     projectRoot: string,
     args: { command?: string; path?: string; args?: string[] }
 ) {
+    const rawInput = args.command || (args as any).cmd || "";
+
+    if (rawInput.includes("-lc") || rawInput.includes("$(pwd)")) {
+        logger.warn(chalk.yellow(`⚠️ REJECTED SHELL HACK: ${rawInput}`));
+        return {
+            content: [{
+                type: "text" as const,
+                text: "❌ ERROR: Shell login flags (-lc) and manual path expansion ($(pwd)) are prohibited. " +
+                    "Use the 'path' parameter for scripts and 'args' for targets."
+            }],
+            isError: false
+        };
+    }
+
     const skillsPath = process.env.SKILLS_PATH ? path.resolve(process.env.SKILLS_PATH) : "";
     let commandToExecute = "";
 
     // 1. Build the command based on provided arguments
-    if (args.command) {
-        commandToExecute = args.command;
-    } else if (args.path) {
+    if (args.path) {
         let scriptPhysicalPath: string;
-
-        // Handle virtual './skills' prefix
         if (args.path.startsWith("./skills") || args.path.startsWith("skills")) {
             if (!skillsPath) throw new McpError(ErrorCode.InvalidParams, "SKILLS_PATH not configured.");
             const relativePart = args.path.replace(/^(\.\/)?skills/, "");
@@ -32,8 +42,16 @@ export async function handleRunCommand(
         }
 
         const scriptArgs = args.args ? args.args.join(" ") : "";
-        commandToExecute = `bash ${scriptPhysicalPath} ${scriptArgs}`;
+        commandToExecute = `bash "${scriptPhysicalPath}" ${scriptArgs}`;
+
+    } else if (args.command || (args as any).cmd) {
+        // Handle both 'command' and 'cmd' (agent hallucination)
+        const baseCmd = args.command || (args as any).cmd;
+        const extraArgs = args.args ? args.args.join(" ") : "";
+        commandToExecute = `${baseCmd} ${extraArgs}`.trim();
+
     } else {
+        logger.warn(chalk.red("❌ No command or path provided in run_command."));
         throw new McpError(ErrorCode.InvalidParams, "Either 'command' or 'path' must be provided.");
     }
 
@@ -48,6 +66,9 @@ export async function handleRunCommand(
             "❌ COMMAND REJECTED: Disallowed characters detected for security."
         );
     }
+
+    logger.info(chalk.cyan(`🛠 EXECUTING: ${commandToExecute}`));
+    logger.info(chalk.gray(`📂 CWD: ${projectRoot}`));
 
     try {
         const { stdout, stderr } = await execPromise(commandToExecute, {

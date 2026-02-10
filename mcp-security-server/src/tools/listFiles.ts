@@ -24,6 +24,23 @@ export async function handleListFiles(
     }
 
     try {
+        const stats = await fs.stat(fullPath);
+
+        if (stats.isFile()) {
+            logger.info(chalk.blue(`ℹ️ listFiles called on a file: ${requestedPath}`));
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: JSON.stringify([{
+                        name: path.basename(fullPath),
+                        type: 'file',
+                        path: requestedPath,
+                        size: stats.size
+                    }], null, 2)
+                }]
+            };
+        }
+
         const entries = await fs.readdir(fullPath, { withFileTypes: true });
         const result: any[] = [];
 

@@ -82,7 +82,7 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     1. Always use relative paths from the current directory.
     2. To see the project, use list_files(path: ".")
     3. To see skills, use list_files(path: "./skills")
-    4. To read a skill, use read_file(path: "./skills/security/jwt-fix/instructions.md")
+    4. To read a skill, use read_file and look for instructions.md in the skill folder.
     5. NEVER use absolute paths starting with /Users/ or /github/workspace.
     6. Parallel tool calls are encouraged to save turns.
     

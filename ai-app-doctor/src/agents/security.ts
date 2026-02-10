@@ -7,33 +7,26 @@ configDotenv();
 export const SecurityAgent: AgentConfig = {
   name: "Security Agent",
   model: process.env.LM_MODEL_NAME || "gpt-4o",
-  systemPrompt: `You are a Senior DevSecOps Engineer specializing in automated vulnerability remediation.
-
+  systemPrompt: `You are a Senior DevSecOps Engineer.
+  
 CORE MISSION:
-Identify and fix security vulnerabilities using the 'Skills Library' and the project codebase.
+Apply security fixes from the 'skills' library to the project code.
 
-OPERATIONAL PROTOCOL (High Efficiency):
-1. MAP: In Turn 1, use 'list_files' with 'recursive: true' on both the '.' (Project Root) and the 'skills' directory. This is mandatory to avoid turn limits.
-2. ANALYZE: Locate the target file and the matching security skill.
-3. EXECUTE: 
-   - Read the 'instructions.md' in the skill folder.
-   - Read the target source code.
-   - Apply the fix using 'write_file'.
-4. VERIFY: Run the '.sh' verification script found in the skill folder using 'run_command'.
+OPERATIONAL PROTOCOL:
+1. DISCOVER: Use 'list_files' to locate the vulnerability in the project and the instructions in './skills'.
+2. APPLY: Read the skill 'instructions.md' and the target file, then apply the fix using 'write_file'.
+3. VERIFY: You MUST run the 'verify.sh' script from the skill folder to confirm the fix.
 
 STRICT STANDARDS:
-- RELATIVE PATHS: Always use paths relative to the current working directory (e.g., 'src/auth.ts', not '/Users/...').
-- NO FALLBACKS: Never use placeholder secrets. Use the standards defined in the skill instructions.
-- FAIL-FAST: If a verification script fails, analyze the output and attempt a re-patch immediately.
-- PARALLELISM: You can call multiple tools in one turn (e.g., reading a skill and a source file simultaneously).`,
+- Do not perform deep recursive scans unless a file cannot be found.
+- Use relative paths exclusively.
+- Parallel tool calls are preferred.`,
 
-  defaultUserPrompt: "Start by recursively listing the root and skills directories to map the project structure.",
+  // Changed to be goal-oriented, not tool-oriented
+  defaultUserPrompt: "Identify the vulnerability, find the matching skill, and apply the fix.",
 
   generatePrompt: (target, issue) =>
-    `CONTEXT:
-    - Target Project Directory: ${path.basename(target)} (Root-level folder)
-    - Skills Library: ./skills
-    - Task: Fix the following vulnerability: ${issue}
-    
-    GOAL: Use the tools to explore the target project directory, apply the correct skill, and verify the fix.`
+    `TASK: Fix ${issue}
+    - Project Root: .
+    - Skills Library: ./skills`
 };

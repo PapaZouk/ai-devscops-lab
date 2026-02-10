@@ -6,7 +6,7 @@ jobs:
     uses: ./.github/workflows/reusable-nodejs-security.yml
     with:
       vulnerability_description: |
-        Vulnerability found in: ./patients/vulnerable-api-app/src/api/authService.ts
+        Vulnerability found in: ./patients/vulnerable-api-app/src/services/authService.ts
         The authService.ts file uses a hardcoded JWT secret without algorithm enforcement. Fix it using the jwt-fix skill.
       llm_url: "http://host.docker.internal:1234/v1" 
       llm_model_name: "openai/gpt-oss-20b"
