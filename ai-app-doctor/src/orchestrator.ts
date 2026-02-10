@@ -10,6 +10,7 @@ import { AgentConfig } from "./types/agentConfig.js";
 import { configDotenv } from "dotenv";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { OpenAIInstrumentation } from "@opentelemetry/instrumentation-openai/build/src/instrumentation.js";
+import { RUNTIME_INSTRUCTIONS } from "./utils/promptTemplates.js";
 
 configDotenv();
 
@@ -51,7 +52,8 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         args: [serverPath],
         env: {
             ...process.env,
-            PROJECT_ROOT: path.resolve(targetPath),
+            // Use ai-app-doctor root for shared DB, keep CWD for target repo.
+            PROJECT_ROOT: path.resolve(process.cwd()),
             CWD: targetPath,
             SKILLS_PATH: skillsPath
         }
@@ -79,30 +81,48 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         apiKey: apiKey
     });
 
-    const runtimeSystemPrompt = `${config.systemPrompt}
-    
-    RUNTIME CONTEXT:
-    - Target Project: .
-    - Skills Library: ./skills
-    
-    NAVIGATION LOGIC:
-    1. **Persistence of Knowledge**: If you successfully read a file (e.g., instructions.md) in a previous turn, it exists. Do not conclude a file is "missing" simply because a subsequent 'list_files' call with limited depth does not show it.
-    2. **Direct Access**: If you know a file's likely path, use 'read_file' directly rather than scanning for it. 
-    3. **Exhaustive Discovery**: Before reporting a skill as "incomplete," you must attempt to read './skills/security/[skill-name]/instructions.md' directly.
+    const runtimeSystemPrompt = `
+        ${config.systemPrompt}
 
-    PATH RESOLUTION RULES:
-    1. Always use relative paths from the current directory (.).
-    2. To see the project, use list_files(path: ".")
-    3. To see skills, use list_files(path: "./skills")
-    4. NEVER use absolute paths (e.g., /Users/... or /github/...).
-    5. Parallel tool calls are encouraged to save turns.
-    
-    ## MANDATORY FINAL STEP: Clinical Delivery
-    Once a fix is verified (verify.sh passes), you MUST:
-    1. **Read** 'skills/git/delivery/instructions.md'.
-    2. **Verify** delivery readiness by running 'skills/git/delivery/verify.sh'.
-    3. If verification fails, reflect on the error logs, refine the patch, and re-verify. Do not loop the same fix more than 3 times.
+        # RUNTIME CONTEXT
+        - **Workbench**: Current Directory (.) is the project root.
+        - **Tools**: Access to skills library via './skills'.
+
+        ${RUNTIME_INSTRUCTIONS}
+
+        # SAFETY CONSTRAINTS
+        - NEVER use absolute paths.
+        - DO NOT remove existing logs.
+        - If a fix fails 3 times, provide a diagnosis and STOP.
+        `.trim();
     `;
+
+    //     RUNTIME CONTEXT:
+    //     - Target Project: .
+    //     - Skills Library: ./skills
+    //  MEMORY & STATE MANAGEMENT:
+    //     1. **State Awareness**: You have a 'manage_memory' tool. Use it to store key discovery data (e.g., the path to a vulnerable file, the name of the skill you selected).
+    //     2. **Continuity**: At the start of every turn, if you feel "lost," use 'manage_memory(action: "recall")' to see your previous findings.
+    //     3. **Path Tracking**: Once you identify the target file, store it immediately: manage_memory(action: "store", key: "target_file", value: "path/to/file.ts").
+
+    //     NAVIGATION LOGIC:
+    //     1. **Persistence of Knowledge**: If you successfully read a file (e.g., instructions.md) in a previous turn, it exists. Do not conclude a file is "missing" simply because a subsequent 'list_files' call with limited depth does not show it.
+    //     2. **Direct Access**: If you know a file's likely path, use 'read_file' directly rather than scanning for it. 
+    //     3. **Exhaustive Discovery**: Before reporting a skill as "incomplete," you must attempt to read './skills/security/[skill-name]/instructions.md' directly.
+
+    //     PATH RESOLUTION RULES:
+    //     1. Always use relative paths from the current directory (.).
+    //     2. To see the project, use list_files(path: ".")
+    //     3. To see skills, use list_files(path: "./skills")
+    //     4. NEVER use absolute paths (e.g., /Users/... or /github/...).
+    //     5. Parallel tool calls are encouraged to save turns.
+
+    //     ## MANDATORY FINAL STEP: Clinical Delivery
+    //     Once a fix is verified (verify.sh passes), you MUST:
+    //     1. **Read** 'skills/git/delivery/instructions.md'.
+    //     2. **Verify** delivery readiness by running 'skills/git/delivery/verify.sh'.
+    //     3. If verification fails, reflect on the error logs, refine the patch, and re-verify. Do not loop the same fix more than 3 times.
+    //     `;
 
     let messages: any[] = [
         { role: "system", content: runtimeSystemPrompt },

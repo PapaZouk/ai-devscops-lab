@@ -9,6 +9,7 @@ import { handleSecureWrite } from "./tools/secureWrite.js";
 import { handleRunCommand } from "./tools/run_command.js";
 import chalk from "chalk";
 import { handleGitDiff } from "./tools/gitDiff.js";
+import { handleMemory } from "./tools/manageMemory.js";
 
 await setupLogger();
 const logger = getLogger("mcp-server");
@@ -145,6 +146,28 @@ server.registerTool(
     async () => {
         logger.debug(`Operation: git_diff`);
         const result = await handleGitDiff(PROJECT_ROOT);
+        return {
+            content: result.content.map(c => ({ type: "text" as const, text: c.text }))
+        };
+    }
+);
+
+server.registerTool(
+    "manage_memory",
+    {
+        description: "Stores or retrieves technical observations (like discovered file paths or error logs) to maintain context across turns. " +
+            "Use 'store' to remember a path/finding, and 'recall' to see everything you've noted.",
+        inputSchema: z.object({
+            action: z.enum(["store", "recall"]).describe("Whether to save a new memory or retrieve all existing ones"),
+            key: z.string().optional().describe("A label for the memory (e.g., 'vulnerable_file', 'verification_status')"),
+            value: z.string().optional().describe("The actual information to remember")
+        })
+    },
+    async (args) => {
+        logger.debug(`Operation: manage_memory | Action: ${args.action}`);
+
+        const result = await handleMemory(args);
+
         return {
             content: result.content.map(c => ({ type: "text" as const, text: c.text }))
         };

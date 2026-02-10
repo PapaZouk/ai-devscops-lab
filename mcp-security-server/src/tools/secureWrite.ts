@@ -14,9 +14,15 @@ const logger = getLogger("secureWrite");
 
 export async function handleSecureWrite(
     projectRoot: string,
-    args: { path: string; code: string; isTest?: boolean }
+    args: { path: string; code?: string; content?: string; isTest?: boolean }
 ) {
-    const { path: relativePath, code, isTest = false } = args;
+    const { path: relativePath, code, content, isTest = false } = args;
+    const finalCode = code ?? content;
+
+    if (finalCode === undefined) {
+        throw new McpError(ErrorCode.InvalidParams, "❌ No code or content provided to write.");
+    }
+
     const fullPath = path.resolve(projectRoot, relativePath);
 
     if (!fullPath.startsWith(path.resolve(projectRoot))) {
@@ -28,7 +34,7 @@ export async function handleSecureWrite(
 
     try {
         await fs.mkdir(path.dirname(fullPath), { recursive: true });
-        await fs.writeFile(fullPath, code, "utf-8");
+        await fs.writeFile(fullPath, finalCode, "utf-8");
 
         let status = 'SUCCESS';
         let biomeOutput = 'Linting skipped';

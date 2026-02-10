@@ -24,22 +24,21 @@ jobs:
   api-patch:
     runs-on: ubuntu-latest
     
-    defaults:
-      run:
-        working-directory: ai-tools/ai-app-doctor
+    env:
+      TARGET_DIR: "${{ github.workspace }}/target-repo"
+      TOOLS_DIR: "${{ github.workspace }}/ai-tools"
+      SKILLS_PATH: "${{ github.workspace }}/target-repo/skills" 
 
     steps:
-      - name: Checkout Target (Vulnerable) Repo
-        uses: actions/checkout@v4
+      - name: Checkout Repositories
+        run: |
+          echo "📥 Fetching Target and AI Tools..."
+        
+      - uses: actions/checkout@v4
         with:
           path: target-repo 
 
-      - name: Prepare Target Environment
-        working-directory: target-repo
-        run: npm install
-
-      - name: Checkout AI Tools Repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: PapaZouk/ai-devscops-lab
           path: ai-tools
@@ -48,65 +47,55 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20.x
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
 
-      - name: Install Dependencies
-        run: npm install
-
-      - name: Build MCP Server
+      - name: Install & Build AI Stack
         run: |
-          cd ../mcp-security-server
+          # Build MCP Server
+          cd $TOOLS_DIR/mcp-security-server
+          npm install && npm run build
+          
+          # Install Doctor App
+          cd $TOOLS_DIR/ai-app-doctor
           npm install
-          npm run build
 
-      - name: Copy Skills to Target
-        run: |
-          rm -rf ${{ github.workspace }}/target-repo/skills
-          cp -r ${{ github.workspace }}/ai-tools/ai-app-doctor/skills ${{ github.workspace }}/target-repo/skills
-          chmod -R +x ${{ github.workspace }}/target-repo/skills
-
-      - name: Prep Skills
-        run: |
-          echo "🧼 Sterilizing instruments: granting +x to all skill scripts..."
-          find ${{ github.workspace }}/ai-tools/ai-app-doctor/skills -name "*.sh" -exec chmod +x {} +
+          # Ensure DB is initialized in the Tools directory
+          export PROJECT_ROOT="$TOOLS_DIR/ai-app-doctor"
+          npx tsx src/utils/initDb.ts
+          
+          echo "✅ AI Tools setup complete."
+          echo "🔍 Target repo ready at $TARGET_DIR"
+          echo "🚀 Starting AI Security Fixer..."
         shell: bash
 
-      - name: Path Pre-flight Check
+      - name: Path Treatment (Symlink Skills)
         run: |
-          echo "::group::Environment Path Validation"
-          export PROJECT_ROOT="${{ github.workspace }}"
-          export SKILLS_PATH="${{ github.workspace }}/ai-tools/ai-app-doctor/skills"
-          
-          chmod +x "$SKILLS_PATH/debug-tools/debug-paths.sh"
-          "$SKILLS_PATH/debug-tools/debug-paths.sh"
-          echo "::endgroup::"
-        env:
-          PROJECT_ROOT: "${{ github.workspace }}"
-          SKILLS_PATH: "${{ github.workspace }}/ai-tools/ai-app-doctor/skills"
-
-      - name: Environment Debug
-        run: |
-          echo "Current User: $(whoami)"
-          echo "Current Dir: $(pwd)"
-          ls -la ./skills/security/jwt-fix/
+          echo "🔗 Linking skills to target-repo..."
+          rm -rf $TARGET_DIR/skills
+          ln -s $TOOLS_DIR/ai-app-doctor/skills $TARGET_DIR/skills
+          find $TOOLS_DIR/ai-app-doctor/skills -name "*.sh" -exec chmod +x {} +
+          echo "✅ Execution permissions set for skill scripts."
 
       - name: Run AI Fixer
         working-directory: ai-tools/ai-app-doctor
         run: |
-          TARGET_PATH="${{ github.workspace }}/target-repo"
-          
-          bash ${{ github.workspace }}/ai-tools/ai-app-doctor/skills/security/jwt-fix/verify.sh $TARGET_PATH/src/services/authService.ts || true
-
           npx tsx src/main.ts \
             --agent=security \
-            --target=$TARGET_PATH \
+            --target=$TARGET_DIR \
             --input="${{ inputs.vulnerability_description }}"
         env:
-          PROJECT_ROOT: "${{ github.workspace }}/target-repo"
-          SKILLS_PATH: "${{ github.workspace }}/ai-tools/ai-app-doctor/skills"
-          CWD: "${{ github.workspace }}/target-repo"
-          DEBUG: "orchestrator:*"
-          NODE_OPTIONS: "--trace-warnings"
           LM_API_KEY: ${{ secrets.LM_API_KEY }}
           LM_BASE_URL: ${{ inputs.llm_url }}
           LM_MODEL_NAME: ${{ inputs.llm_model_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Points to tools directory so memory tools find the correct agent_state.db
+          PROJECT_ROOT: ${{ github.workspace }}/ai-tools/ai-app-doctor
+
+      - name: Save Output
+        run: |
+          echo "📁 Saving AI Fixer output for review..."
+          mkdir -p $GITHUB_WORKSPACE/ai-fixer-output
+          cp -r $TARGET_DIR/* $GITHUB_WORKSPACE/ai-fixer-output/
+          echo "✅ Output saved to $GITHUB_WORKSPACE/ai-fixer-output/"
+        shell: bash

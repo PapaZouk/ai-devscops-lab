@@ -9,9 +9,9 @@ const logger = getLogger("listFiles");
 
 export async function handleListFiles(
     projectRoot: string,
-    args: { path: string, recursive?: boolean }
+    args: { path?: string, recursive?: boolean }
 ) {
-    const { path: requestedPath, recursive = false } = args;
+    const { path: requestedPath = ".", recursive = false } = args ?? {};
     const skillsPath = process.env.SKILLS_PATH ? path.resolve(process.env.SKILLS_PATH) : "";
     const fullPath = path.resolve(projectRoot, requestedPath);
 

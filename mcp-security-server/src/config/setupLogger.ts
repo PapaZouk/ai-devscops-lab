@@ -14,6 +14,7 @@ export async function setupLogger() {
             { category: "listFiles", lowestLevel: "debug", sinks: ["console"] },
             { category: "readFile", lowestLevel: "debug", sinks: ["console"] },
             { category: "gitDiff", lowestLevel: "debug", sinks: ["console"] },
+            { category: "manageMemory", lowestLevel: "debug", sinks: ["console"] },
         ]
     });
 }
