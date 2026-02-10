@@ -34,6 +34,10 @@ jobs:
         with:
           path: target-repo 
 
+      - name: Prepare Target Environment
+        working-directory: target-repo
+        run: npm install
+
       - name: Checkout AI Tools Repo
         uses: actions/checkout@v4
         with:
@@ -56,11 +60,8 @@ jobs:
 
       - name: Copy Skills to Target
         run: |
-          # Remove existing link if it exists
           rm -rf ${{ github.workspace }}/target-repo/skills
-          # Copy the actual directory so there's no symlink confusion
           cp -r ${{ github.workspace }}/ai-tools/ai-app-doctor/skills ${{ github.workspace }}/target-repo/skills
-          # Grant permissions
           chmod -R +x ${{ github.workspace }}/target-repo/skills
 
       - name: Prep Skills
@@ -72,7 +73,6 @@ jobs:
       - name: Path Pre-flight Check
         run: |
           echo "::group::Environment Path Validation"
-          # Define paths relative to the actual workspace
           export PROJECT_ROOT="${{ github.workspace }}"
           export SKILLS_PATH="${{ github.workspace }}/ai-tools/ai-app-doctor/skills"
           
@@ -83,21 +83,29 @@ jobs:
           PROJECT_ROOT: "${{ github.workspace }}"
           SKILLS_PATH: "${{ github.workspace }}/ai-tools/ai-app-doctor/skills"
 
+      - name: Environment Debug
+        run: |
+          echo "Current User: $(whoami)"
+          echo "Current Dir: $(pwd)"
+          ls -la ./skills/security/jwt-fix/
+
       - name: Run AI Fixer
+        working-directory: ai-tools/ai-app-doctor
         run: |
           TARGET_PATH="${{ github.workspace }}/target-repo"
           
+          bash ${{ github.workspace }}/ai-tools/ai-app-doctor/skills/security/jwt-fix/verify.sh $TARGET_PATH/src/services/authService.ts || true
+
           npx tsx src/main.ts \
             --agent=security \
             --target=$TARGET_PATH \
             --input="${{ inputs.vulnerability_description }}"
         env:
-          # Modular anchors for the MCP Server
-          PROJECT_ROOT: "${{ github.workspace }}"
+          PROJECT_ROOT: "${{ github.workspace }}/target-repo"
           SKILLS_PATH: "${{ github.workspace }}/ai-tools/ai-app-doctor/skills"
           CWD: "${{ github.workspace }}/target-repo"
-          
-          # LLM Config
+          DEBUG: "orchestrator:*"
+          NODE_OPTIONS: "--trace-warnings"
           LM_API_KEY: ${{ secrets.LM_API_KEY }}
           LM_BASE_URL: ${{ inputs.llm_url }}
           LM_MODEL_NAME: ${{ inputs.llm_model_name }}

@@ -45,7 +45,6 @@ export async function handleRunCommand(
         commandToExecute = `bash "${scriptPhysicalPath}" ${scriptArgs}`;
 
     } else if (args.command || (args as any).cmd) {
-        // Handle both 'command' and 'cmd' (agent hallucination)
         const baseCmd = args.command || (args as any).cmd;
         const extraArgs = args.args ? args.args.join(" ") : "";
         commandToExecute = `${baseCmd} ${extraArgs}`.trim();
@@ -78,7 +77,7 @@ export async function handleRunCommand(
             }
         });
 
-        const output = stdout || stderr;
+        const output = [stdout, stderr].filter(Boolean).join("\n").trim() || "Done (no output).";
         const status = stderr ? 'COMMAND_WARNING' : 'COMMAND_SUCCESS';
 
         // 3. Audit Logging (Preserved from your version)
@@ -86,7 +85,7 @@ export async function handleRunCommand(
             INSERT INTO audit_logs (file_path, action, status, biome_output) 
             VALUES (?, ?, ?, ?)
         `);
-        stmt.run("SYSTEM", `EXEC: ${commandToExecute}`, status, output);
+        stmt.run("SYSTEM", `EXEC: ${commandToExecute}`, stderr ? 'COMMAND_WARNING' : 'COMMAND_SUCCESS', output);
 
         return {
             content: [{
@@ -96,18 +95,21 @@ export async function handleRunCommand(
             isError: false
         };
     } catch (error: any) {
-        const errorMessage = error.stdout || error.stderr || error.message || "Unknown error";
+        const errorOutput = [error.stdout, error.stderr, error.message]
+            .filter(Boolean)
+            .join("\n")
+            .trim();
 
         const stmt = db.prepare(`
             INSERT INTO audit_logs (file_path, action, status, biome_output) 
             VALUES (?, ?, ?, ?)
         `);
-        stmt.run("SYSTEM", `EXEC: ${commandToExecute}`, 'COMMAND_ERROR', errorMessage);
+        stmt.run("SYSTEM", `EXEC: ${commandToExecute}`, 'COMMAND_ERROR', errorOutput);
 
         return {
             content: [{
                 type: "text" as const,
-                text: errorMessage
+                text: `❌ Command Failed:\n${errorOutput}`
             }],
             isError: false // Kept as false per your requirement to let agent see error output
         };
