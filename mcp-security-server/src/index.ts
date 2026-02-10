@@ -179,15 +179,23 @@ server.registerTool(
         description: "Stores or retrieves technical observations (like discovered file paths or error logs) to maintain context across turns. " +
             "Use 'store' to remember a path/finding, and 'recall' to see everything you've noted.",
         inputSchema: z.object({
-            action: z.enum(["store", "recall"]).describe("Whether to save a new memory or retrieve all existing ones"),
+            action: z.enum(["store", "recall"]).optional().describe("Whether to save a new memory or retrieve all existing ones"),
             key: z.string().optional().describe("A label for the memory (e.g., 'vulnerable_file', 'verification_status')"),
             value: z.string().optional().describe("The actual information to remember")
         })
     },
     async (args) => {
-        logger.debug(`Operation: manage_memory | Action: ${args.action}`);
+        const inferredAction =
+            args.action ??
+            (args.key || args.value ? "store" : "recall");
 
-        const result = await handleMemory(args);
+        logger.debug(`Operation: manage_memory | Action: ${inferredAction}`);
+
+        const result = await handleMemory({
+            action: inferredAction as "store" | "recall",
+            key: args.key,
+            value: args.value
+        });
 
         return {
             content: result.content.map(c => ({ type: "text" as const, text: c.text }))

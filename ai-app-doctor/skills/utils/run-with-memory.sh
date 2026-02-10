@@ -3,7 +3,15 @@
 
 SCRIPT_TO_EXECUTE=$1
 MEMORY_KEY=${2:-"target_file"} # Defaults to 'target_file' but can be 'test_file', etc.
-DB_PATH="./.agent_memory.sqlite"
+
+# Prefer explicit DB path, otherwise derive from skills path.
+if [ -n "$AGENT_DB_PATH" ]; then
+    DB_PATH="$AGENT_DB_PATH"
+elif [ -n "$SKILLS_PATH" ]; then
+    DB_PATH="$(cd "$SKILLS_PATH/.." && pwd)/agent_state.db"
+else
+    DB_PATH="./agent_state.db"
+fi
 
 if [ -z "$SCRIPT_TO_EXECUTE" ]; then
     echo "❌ Error: No script provided to execute."
