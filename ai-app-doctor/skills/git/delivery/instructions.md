@@ -18,9 +18,10 @@
 ## Execution Protocol
 1. **Pre-Flight (one time only):** Run `skills/git/delivery/verify.sh` once.
 2. **Initialize:** Create and switch to a new feature branch `doctor/[category]-[description]`.
-3. **Execute:** Stage and commit the existing code changes.
-4. **Submit:** Push the branch and create the MR.
-5. **Do not loop:** After pre-flight succeeds, never run `skills/git/delivery/verify.sh` again in the same session.
+3. **Set commit identity (repo-local):** configure `user.name` and `user.email` before committing.
+4. **Execute:** Stage and commit the existing code changes.
+5. **Submit:** Push the branch and create the MR.
+6. **Do not loop:** After pre-flight succeeds, never run `skills/git/delivery/verify.sh` again in the same session.
 
 ### Command Format Requirement
 - Use `run_command(command, args)` for `git` and `gh` executables.
@@ -28,6 +29,8 @@
 
 ### Example Calls
 - `run_command(command: "git", args: ["checkout", "-b", "doctor/secure-secret-management"])`
+- `run_command(command: "git", args: ["config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"])`
+- `run_command(command: "git", args: ["config", "user.name", "github-actions[bot]"])`
 - `run_command(command: "git", args: ["add", "src/services/authService.ts"])`
 - `run_command(command: "git", args: ["commit", "-m", "Fix hardcoded secret in authService"])`
 - `run_command(command: "git", args: ["push", "-u", "origin", "HEAD"])`
@@ -36,6 +39,8 @@
 ## Recovery Protocol (Self-Correction)
 - **If 'origin' is missing:** Run `git remote -v` to diagnose. If no remote exists, ask the user for the target URL or attempt to use the current directory context to re-add origin.
 - **If 'gh' auth fails:** Verify if `GITHUB_TOKEN` is present in the environment. If not, inform the user that the PR cannot be opened automatically.
+- **If commit fails with identity unknown:** configure local `git config user.email` and `git config user.name`, then retry commit once.
+- **If `gh pr create` says push first:** run `git push -u origin HEAD`, then retry `gh pr create` once.
 - **If branch already exists:** If the push fails because the branch exists on remote, use `git push -f` only if you are certain your local changes are the latest "Doctor's" version.
 
 ## Definition of Done

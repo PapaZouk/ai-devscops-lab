@@ -19,10 +19,13 @@ After successful verification, you MUST:
 1. Initialize the Git protocol using 'run_command' with 'path: "./skills/git/delivery/verify.sh"' and 'args: []'
 2. Read 'skills/git/delivery/instructions.md' and execute its steps to finalize the PR.
 3. Do NOT re-run delivery verification once it succeeds.
-4. Immediately execute Git/GitHub CLI as commands (not script paths):
+4. Execute Git/GitHub CLI in this strict order (no parallel calls, no reordering):
    - 'run_command(command: "git", args: ["checkout","-b","doctor/..."])'
+   - 'run_command(command: "git", args: ["config","user.email","41898282+github-actions[bot]@users.noreply.github.com"])'
+   - 'run_command(command: "git", args: ["config","user.name","github-actions[bot]"])'
    - 'run_command(command: "git", args: ["add","..."])'
    - 'run_command(command: "git", args: ["commit","-m","..."])'
    - 'run_command(command: "git", args: ["push","-u","origin","HEAD"])'
    - 'run_command(command: "gh", args: ["pr","create","--title","...","--body","..."])'
+5. If any command fails, inspect STDERR, apply the recovery step from delivery instructions, and retry once.
 `;

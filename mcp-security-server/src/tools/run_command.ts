@@ -14,6 +14,18 @@ function shellQuote(value: string): string {
     return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
+async function executeCommand(projectRoot: string, commandToExecute: string) {
+    return execPromise(commandToExecute, {
+        cwd: projectRoot,
+        timeout: 60000,
+        env: {
+            ...process.env,
+            PROJECT_ROOT: projectRoot,
+            GITHUB_TOKEN: process.env.GITHUB_TOKEN || "",
+        }
+    });
+}
+
 export async function handleRunCommand(
     projectRoot: string,
     args: { command?: string; path?: string; args?: string[] }
@@ -81,15 +93,7 @@ export async function handleRunCommand(
     logger.info(chalk.gray(`📂 CWD: ${projectRoot}`));
 
     try {
-        const { stdout, stderr } = await execPromise(commandToExecute, {
-            cwd: projectRoot,
-            timeout: 60000,
-            env: {
-                ...process.env,
-                PROJECT_ROOT: projectRoot,
-                GITHUB_TOKEN: process.env.GITHUB_TOKEN || "",
-            }
-        });
+        const { stdout, stderr } = await executeCommand(projectRoot, commandToExecute);
 
         const output = [stdout, stderr].filter(Boolean).join("\n").trim() || "Done (no output).";
         const status = stderr ? 'COMMAND_WARNING' : 'COMMAND_SUCCESS';
@@ -113,6 +117,110 @@ export async function handleRunCommand(
             .filter(Boolean)
             .join("\n")
             .trim();
+
+        // Recovery 1: git commit failed because identity is missing.
+        // Configure repository-local identity and retry once.
+        if (
+            commandToExecute.startsWith("git ")
+            && commandToExecute.includes(" commit ")
+            && /Author identity unknown|empty ident name/i.test(errorOutput)
+        ) {
+            const fallbackEmail = process.env.GIT_AUTHOR_EMAIL || "41898282+github-actions[bot]@users.noreply.github.com";
+            const fallbackName = process.env.GIT_AUTHOR_NAME || "github-actions[bot]";
+
+            try {
+                await executeCommand(projectRoot, `git config user.email ${shellQuote(fallbackEmail)}`);
+                await executeCommand(projectRoot, `git config user.name ${shellQuote(fallbackName)}`);
+                const retry = await executeCommand(projectRoot, commandToExecute);
+                const retryOutput = [retry.stdout, retry.stderr]
+                    .filter(Boolean)
+                    .join("\n")
+                    .trim() || "Done (no output).";
+
+                const stmt = db.prepare(`
+                    INSERT INTO audit_logs (file_path, action, status, biome_output) 
+                    VALUES (?, ?, ?, ?)
+                `);
+                stmt.run("SYSTEM", `EXEC: ${commandToExecute}`, "COMMAND_RECOVERED", `[auto-configured git identity]\n${retryOutput}`);
+
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `${retryOutput}\n\n[run_command] Auto-recovery applied: configured local git author identity and retried commit.`
+                    }],
+                    isError: false
+                };
+            } catch (retryError: any) {
+                const retryErrorOutput = [retryError.stdout, retryError.stderr, retryError.message]
+                    .filter(Boolean)
+                    .join("\n")
+                    .trim();
+
+                const stmt = db.prepare(`
+                    INSERT INTO audit_logs (file_path, action, status, biome_output) 
+                    VALUES (?, ?, ?, ?)
+                `);
+                stmt.run("SYSTEM", `EXEC: ${commandToExecute}`, "COMMAND_ERROR", `[recovery_failed]\n${retryErrorOutput}`);
+
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `❌ Command Failed after recovery:\n${retryErrorOutput}\n\nHint: Use 'path' for script files (e.g. ./skills/.../verify.sh) and 'command' for executables (e.g. git, gh).`
+                    }],
+                    isError: false
+                };
+            }
+        }
+
+        // Recovery 2: gh pr create requires pushed head branch.
+        // Push HEAD and retry once.
+        if (
+            commandToExecute.startsWith("gh ")
+            && commandToExecute.includes(" pr create")
+            && /must first push the current branch to a remote|use the --head flag/i.test(errorOutput)
+        ) {
+            try {
+                await executeCommand(projectRoot, "git push -u origin HEAD");
+                const retry = await executeCommand(projectRoot, commandToExecute);
+                const retryOutput = [retry.stdout, retry.stderr]
+                    .filter(Boolean)
+                    .join("\n")
+                    .trim() || "Done (no output).";
+
+                const stmt = db.prepare(`
+                    INSERT INTO audit_logs (file_path, action, status, biome_output) 
+                    VALUES (?, ?, ?, ?)
+                `);
+                stmt.run("SYSTEM", `EXEC: ${commandToExecute}`, "COMMAND_RECOVERED", `[auto-pushed head]\n${retryOutput}`);
+
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `${retryOutput}\n\n[run_command] Auto-recovery applied: pushed HEAD and retried PR creation.`
+                    }],
+                    isError: false
+                };
+            } catch (retryError: any) {
+                const retryErrorOutput = [retryError.stdout, retryError.stderr, retryError.message]
+                    .filter(Boolean)
+                    .join("\n")
+                    .trim();
+
+                const stmt = db.prepare(`
+                    INSERT INTO audit_logs (file_path, action, status, biome_output) 
+                    VALUES (?, ?, ?, ?)
+                `);
+                stmt.run("SYSTEM", `EXEC: ${commandToExecute}`, "COMMAND_ERROR", `[recovery_failed]\n${retryErrorOutput}`);
+
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `❌ Command Failed after recovery:\n${retryErrorOutput}\n\nHint: Use 'path' for script files (e.g. ./skills/.../verify.sh) and 'command' for executables (e.g. git, gh).`
+                    }],
+                    isError: false
+                };
+            }
+        }
 
         const stmt = db.prepare(`
             INSERT INTO audit_logs (file_path, action, status, biome_output) 
