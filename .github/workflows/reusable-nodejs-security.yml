@@ -12,6 +12,14 @@ on:
       llm_model_name:
         required: true
         type: string
+      run_environment:
+        required: false
+        type: string
+        default: "prod"
+      skip_delivery:
+        required: false
+        type: boolean
+        default: false
     secrets:
       LM_API_KEY:
         required: true
@@ -88,6 +96,7 @@ jobs:
           LM_API_KEY: ${{ secrets.LM_API_KEY }}
           LM_BASE_URL: ${{ inputs.llm_url }}
           LM_MODEL_NAME: ${{ inputs.llm_model_name }}
+          SKIP_DELIVERY: ${{ (inputs.run_environment == 'dev' || inputs.skip_delivery) && 'true' || 'false' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Points to tools directory so memory tools find the correct agent_state.db
           PROJECT_ROOT: ${{ github.workspace }}/ai-tools/ai-app-doctor

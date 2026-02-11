@@ -5,7 +5,6 @@ import { pathToFileURL } from 'url';
 export function initializeDatabase(dbPath: string) {
     const db = new Database(dbPath);
 
-    // Create agent_memory table
     db.prepare(`
         CREATE TABLE IF NOT EXISTS agent_memory (
             key TEXT PRIMARY KEY,
@@ -14,7 +13,6 @@ export function initializeDatabase(dbPath: string) {
         )
     `).run();
 
-    // Audit logs table for secureWrite
     db.prepare(`
         CREATE TABLE IF NOT EXISTS audit_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

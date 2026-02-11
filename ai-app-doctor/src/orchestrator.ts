@@ -10,7 +10,7 @@ import { AgentConfig } from "./types/agentConfig.js";
 import { configDotenv } from "dotenv";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { OpenAIInstrumentation } from "@opentelemetry/instrumentation-openai/build/src/instrumentation.js";
-import { RUNTIME_INSTRUCTIONS } from "./utils/promptTemplates.js";
+import { getRuntimeInstructions } from "./utils/promptTemplates.js";
 
 configDotenv();
 
@@ -52,7 +52,6 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         args: [serverPath],
         env: {
             ...process.env,
-            // Use ai-app-doctor root for shared DB, keep CWD for target repo.
             PROJECT_ROOT: path.resolve(process.cwd()),
             CWD: targetPath,
             SKILLS_PATH: skillsPath
@@ -81,6 +80,14 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         apiKey: apiKey
     });
 
+    const skipDelivery = process.env.SKIP_DELIVERY === "true" || process.env.ACT === "true";
+
+    if (skipDelivery) {
+        logger.info(chalk.yellow("🧪 Local mode detected: PR delivery steps are disabled."));
+    }
+
+    const runtimeInstructions = getRuntimeInstructions({ skipDelivery });
+
     const runtimeSystemPrompt = `
         ${config.systemPrompt}
 
@@ -88,41 +95,13 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         - **Workbench**: Current Directory (.) is the project root.
         - **Tools**: Access to skills library via './skills'.
 
-        ${RUNTIME_INSTRUCTIONS}
+        ${runtimeInstructions}
 
         # SAFETY CONSTRAINTS
         - NEVER use absolute paths.
         - DO NOT remove existing logs.
         - If a fix fails 3 times, provide a diagnosis and STOP.
         `.trim();
-    `;
-
-    //     RUNTIME CONTEXT:
-    //     - Target Project: .
-    //     - Skills Library: ./skills
-    //  MEMORY & STATE MANAGEMENT:
-    //     1. **State Awareness**: You have a 'manage_memory' tool. Use it to store key discovery data (e.g., the path to a vulnerable file, the name of the skill you selected).
-    //     2. **Continuity**: At the start of every turn, if you feel "lost," use 'manage_memory(action: "recall")' to see your previous findings.
-    //     3. **Path Tracking**: Once you identify the target file, store it immediately: manage_memory(action: "store", key: "target_file", value: "path/to/file.ts").
-
-    //     NAVIGATION LOGIC:
-    //     1. **Persistence of Knowledge**: If you successfully read a file (e.g., instructions.md) in a previous turn, it exists. Do not conclude a file is "missing" simply because a subsequent 'list_files' call with limited depth does not show it.
-    //     2. **Direct Access**: If you know a file's likely path, use 'read_file' directly rather than scanning for it. 
-    //     3. **Exhaustive Discovery**: Before reporting a skill as "incomplete," you must attempt to read './skills/security/[skill-name]/instructions.md' directly.
-
-    //     PATH RESOLUTION RULES:
-    //     1. Always use relative paths from the current directory (.).
-    //     2. To see the project, use list_files(path: ".")
-    //     3. To see skills, use list_files(path: "./skills")
-    //     4. NEVER use absolute paths (e.g., /Users/... or /github/...).
-    //     5. Parallel tool calls are encouraged to save turns.
-
-    //     ## MANDATORY FINAL STEP: Clinical Delivery
-    //     Once a fix is verified (verify.sh passes), you MUST:
-    //     1. **Read** 'skills/git/delivery/instructions.md'.
-    //     2. **Verify** delivery readiness by running 'skills/git/delivery/verify.sh'.
-    //     3. If verification fails, reflect on the error logs, refine the patch, and re-verify. Do not loop the same fix more than 3 times.
-    //     `;
 
     let messages: any[] = [
         { role: "system", content: runtimeSystemPrompt },
@@ -152,7 +131,6 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         if (message.tool_calls && message.tool_calls.length > 0) {
             const toolOutputs: any[] = [];
             for (const call of message.tool_calls) {
-                // TYPE GUARD: satisfy compiler and narrow type to access .function
                 if (call.type !== 'function') {
                     toolOutputs.push({
                         role: "tool",
@@ -165,7 +143,6 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                 const toolName = call.function.name;
                 const rawArgs = call.function.arguments || "{}";
 
-                // 1. Log Tool Call (Brings back the yellow tool logs)
                 logger.info(chalk.yellow(`🔧 Tool: ${toolName}`));
                 try {
                     const parsedArgs = JSON.parse(rawArgs);
@@ -174,7 +151,6 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                     console.log(chalk.red(`Failed to parse args: ${rawArgs}`));
                 }
 
-                // 2. Retry Logic
                 const toolKey = `${toolName}:${rawArgs}`;
                 const count = (toolRetryCounter.get(toolKey) || 0) + 1;
                 toolRetryCounter.set(toolKey, count);
@@ -192,7 +168,6 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                     continue;
                 }
 
-                // 3. Execute Tool
                 try {
                     const result = await client.callTool({
                         name: toolName,
@@ -201,7 +176,6 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
 
                     let contentString = JSON.stringify(result.content);
 
-                    // Log tool outputs for visibility in CI logs
                     const toolText = result.content
                         .map((c: any) => (typeof c.text === "string" ? c.text : ""))
                         .filter(Boolean)

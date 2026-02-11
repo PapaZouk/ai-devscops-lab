@@ -1,4 +1,4 @@
-export const RUNTIME_INSTRUCTIONS = `
+const COMMON_RUNTIME_INSTRUCTIONS = `
 ## 🧠 OPERATIONAL COGNITION
 1. **Memory First**: Before any action, check your context with 'manage_memory(action: "recall")'.
 2. **Stateful Discovery**: Once you identify a target file or a matching skill, STORE it immediately using 'manage_memory' with BOTH key and value. 
@@ -13,7 +13,9 @@ export const RUNTIME_INSTRUCTIONS = `
 - **Step 2: Strategy Selection**: Find the matching skill in './skills/security/'. Read its 'instructions.md'.
 - **Step 3: Precision Surgery**: Apply the fix via 'write_file'. **IMPORTANT**: Do not add comments or change unrelated logic.
 - **Step 4: Atomic Verification**: Run the skill's 'verify.sh' exactly as its instructions specify. If it fails, you have 3 attempts to refine before providing a "Clinical Summary" of the conflict.
+`;
 
+const DELIVERY_REQUIRED_INSTRUCTIONS = `
 ## 🚀 FINAL DELIVERY (MANDATORY)
 After successful verification, you MUST:
 1. Initialize the Git protocol using 'run_command' with 'path: "./skills/git/delivery/verify.sh"' and 'args: []'
@@ -29,3 +31,20 @@ After successful verification, you MUST:
    - 'run_command(command: "gh", args: ["pr","create","--title","...","--body","..."])'
 5. If any command fails, inspect STDERR, apply the recovery step from delivery instructions, and retry once.
 `;
+
+const LOCAL_COMPLETION_INSTRUCTIONS = `
+## 🧪 LOCAL MODE COMPLETION (NO PR FLOW)
+- Local mode is active. Do NOT run delivery pre-flight or any GitHub PR commands.
+- After successful skill verification, stop tool use and provide a concise "Clinical Summary":
+  - Patched file path
+  - Verification command and result
+  - Why PR delivery was skipped in local mode
+`;
+
+export function getRuntimeInstructions(options: { skipDelivery: boolean }): string {
+  const completionInstructions = options.skipDelivery
+    ? LOCAL_COMPLETION_INSTRUCTIONS
+    : DELIVERY_REQUIRED_INSTRUCTIONS;
+
+  return `${COMMON_RUNTIME_INSTRUCTIONS}\n\n${completionInstructions}`.trim();
+}

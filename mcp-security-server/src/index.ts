@@ -123,10 +123,8 @@ server.registerTool(
         })
     },
     async (args) => {
-        // 1. Resolve the input (handle both 'command' and 'cmd')
         let rawCmd = args.command || args.cmd;
 
-        // 2. If the AI sent an array (e.g. ["bash", "-lc", "..."]), join it
         if (Array.isArray(rawCmd)) {
             rawCmd = rawCmd.join(" ");
         }
@@ -144,14 +142,12 @@ server.registerTool(
             )
         );
 
-        // 3. Call your modular handler
         const result = await handleRunCommand(PROJECT_ROOT, {
             command: typeof rawCmd === "string" ? rawCmd : undefined,
             path: args.path,
             args: args.args
         });
 
-        // 4. Ensure we return the correct MCP shape
         return {
             content: result.content.map(c => ({ type: "text" as const, text: c.text }))
         };

@@ -50,7 +50,6 @@ async function main() {
     console.log(chalk.gray(`📂 Target: ${absoluteTargetPath}`));
 
     try {
-        // Ensure startOrchestrator knows about the dbPath if it manages tools
         const result = await startOrchestrator(selectedConfig, absoluteTargetPath, finalUserPrompt);
 
         if (result.success) {
