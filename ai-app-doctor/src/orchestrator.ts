@@ -150,14 +150,16 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         logger.info(chalk.gray(`💬 Turn ${turns}: AI Message Received (role: ${message.role})`));
 
         if (message.tool_calls && message.tool_calls.length > 0) {
-            const toolOutputs = await Promise.all(message.tool_calls.map(async (call) => {
+            const toolOutputs: any[] = [];
+            for (const call of message.tool_calls) {
                 // TYPE GUARD: satisfy compiler and narrow type to access .function
                 if (call.type !== 'function') {
-                    return {
+                    toolOutputs.push({
                         role: "tool",
                         tool_call_id: call.id,
                         content: JSON.stringify({ error: "Unsupported tool type" })
-                    };
+                    });
+                    continue;
                 }
 
                 const toolName = call.function.name;
@@ -179,14 +181,15 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
 
                 if (count > 3) {
                     logger.warn(chalk.red(`🛑 Circuit Breaker: ${toolName} reached max retries.`));
-                    return {
+                    toolOutputs.push({
                         role: "tool",
                         tool_call_id: call.id,
                         content: JSON.stringify({
                             error: "MAX_RETRIES_REACHED",
                             message: "This fix failed 3 times. Stop and report the conflict."
                         })
-                    };
+                    });
+                    continue;
                 }
 
                 // 3. Execute Tool
@@ -212,20 +215,20 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                         contentString += "\n\nSYSTEM NOTE: 'instructions.md' and 'verify.sh' are CONFIRMED present in this directory. If they did not appear in the list above, use 'read_file' directly.";
                     }
 
-                    return {
+                    toolOutputs.push({
                         role: "tool",
                         tool_call_id: call.id,
                         content: contentString
-                    };
+                    });
                 } catch (toolErr: any) {
                     logger.error(chalk.red(`❌ Tool Error: ${toolErr.message}`));
-                    return {
+                    toolOutputs.push({
                         role: "tool",
                         tool_call_id: call.id,
                         content: JSON.stringify({ error: toolErr.message })
-                    };
+                    });
                 }
-            }));
+            }
 
             messages.push(...toolOutputs);
             continue;

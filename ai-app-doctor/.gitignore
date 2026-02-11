@@ -1,4 +1,5 @@
 ./.agent_memory
+dist/
 tmp/
 *.bak
 *.tmp

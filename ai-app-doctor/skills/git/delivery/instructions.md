@@ -16,11 +16,22 @@
     4. **Keep it concise:** 3-5 high-impact bullet points.
 
 ## Execution Protocol
-1. **Initialize:** Create and switch to a new feature branch `doctor/[category]-[description]`.
-2. **Execute:** Apply the necessary code changes.
-3. **Verify:** Run the diagnostic scripts (e.g., `verify.sh`).
+1. **Pre-Flight (one time only):** Run `skills/git/delivery/verify.sh` once.
+2. **Initialize:** Create and switch to a new feature branch `doctor/[category]-[description]`.
+3. **Execute:** Stage and commit the existing code changes.
 4. **Submit:** Push the branch and create the MR.
-   - **Command:** `git push -u origin HEAD && gh pr create --title "[Title]" --body "[Synthesized Description]"`
+5. **Do not loop:** After pre-flight succeeds, never run `skills/git/delivery/verify.sh` again in the same session.
+
+### Command Format Requirement
+- Use `run_command(command, args)` for `git` and `gh` executables.
+- Do NOT send `git` or `gh` via `path`.
+
+### Example Calls
+- `run_command(command: "git", args: ["checkout", "-b", "doctor/secure-secret-management"])`
+- `run_command(command: "git", args: ["add", "src/services/authService.ts"])`
+- `run_command(command: "git", args: ["commit", "-m", "Fix hardcoded secret in authService"])`
+- `run_command(command: "git", args: ["push", "-u", "origin", "HEAD"])`
+- `run_command(command: "gh", args: ["pr", "create", "--title", "Fix hardcoded secret in authService", "--body", "..."])`
 
 ## Recovery Protocol (Self-Correction)
 - **If 'origin' is missing:** Run `git remote -v` to diagnose. If no remote exists, ask the user for the target URL or attempt to use the current directory context to re-add origin.

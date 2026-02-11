@@ -9,6 +9,11 @@ import path from "node:path";
 const execPromise = promisify(exec);
 const logger = getLogger("run_command");
 
+function shellQuote(value: string): string {
+    // POSIX-safe single-quote escaping: 'foo'bar' -> 'foo'"'"'bar'
+    return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
 export async function handleRunCommand(
     projectRoot: string,
     args: { command?: string; path?: string; args?: string[] }
@@ -32,21 +37,30 @@ export async function handleRunCommand(
 
     // Build the command based on provided arguments
     if (args.path) {
-        let scriptPhysicalPath: string;
-        if (args.path.startsWith("./skills") || args.path.startsWith("skills")) {
+        const looksLikeScriptPath = args.path.includes("/") || args.path.endsWith(".sh");
+
+        // Some models send executables in `path` (e.g. path="git", args=["status"]).
+        // Treat those as normal commands instead of filesystem scripts.
+        if (!looksLikeScriptPath) {
+            const extraArgs = args.args ? args.args.map(shellQuote).join(" ") : "";
+            commandToExecute = `${args.path} ${extraArgs}`.trim();
+        } else {
+            let scriptPhysicalPath: string;
+            if (args.path.startsWith("./skills") || args.path.startsWith("skills")) {
             if (!skillsPath) throw new McpError(ErrorCode.InvalidParams, "SKILLS_PATH not configured.");
             const relativePart = args.path.replace(/^(\.\/)?skills/, "");
             scriptPhysicalPath = path.resolve(skillsPath, relativePart.startsWith("/") ? relativePart.slice(1) : relativePart);
-        } else {
-            scriptPhysicalPath = path.resolve(projectRoot, args.path);
-        }
+            } else {
+                scriptPhysicalPath = path.resolve(projectRoot, args.path);
+            }
 
-        const scriptArgs = args.args ? args.args.join(" ") : "";
-        commandToExecute = `bash "${scriptPhysicalPath}" ${scriptArgs}`;
+            const scriptArgs = args.args ? args.args.map(shellQuote).join(" ") : "";
+            commandToExecute = `bash "${scriptPhysicalPath}" ${scriptArgs}`;
+        }
 
     } else if (args.command || (args as any).cmd) {
         const baseCmd = args.command || (args as any).cmd;
-        const extraArgs = args.args ? args.args.join(" ") : "";
+        const extraArgs = args.args ? args.args.map(shellQuote).join(" ") : "";
         commandToExecute = `${baseCmd} ${extraArgs}`.trim();
 
     } else {
@@ -109,7 +123,7 @@ export async function handleRunCommand(
         return {
             content: [{
                 type: "text" as const,
-                text: `❌ Command Failed:\n${errorOutput}`
+                text: `❌ Command Failed:\n${errorOutput}\n\nHint: Use 'path' for script files (e.g. ./skills/.../verify.sh) and 'command' for executables (e.g. git, gh).`
             }],
             isError: false // Kept as false per your requirement to let agent see error output
         };
