@@ -10,6 +10,7 @@ const COMMON_RUNTIME_INSTRUCTIONS = `
 ## 🛠 WORKFLOW RIGOR
 - **Step 1: Clinical Diagnosis**: Read the vulnerability description. Use 'list_files' and 'read_file' to locate the exact sink/source.
 - **Navigation Rule**: Do not call 'list_files' on the same path more than once if output is unchanged. Move to 'read_file' or 'write_file'.
+- **Lockfile Rule**: Never use 'read_file' or 'write_file' on lockfiles (\`package-lock.json\`, \`pnpm-lock.yaml\`, \`yarn.lock\`). Use \`run_command\` (\`npm install\`, \`npm update\`, \`npm audit fix\`) to regenerate them.
 - **Step 2: Strategy Selection**: Find the matching skill in './skills/security/'. Read its 'instructions.md'.
 - **Step 3: Precision Surgery**: Apply the fix via 'write_file'. **IMPORTANT**: Do not add comments or change unrelated logic.
 - **Step 4: Atomic Verification**: Run the skill's 'verify.sh' exactly as its instructions specify. If it fails, you have 3 attempts to refine before providing a "Clinical Summary" of the conflict.

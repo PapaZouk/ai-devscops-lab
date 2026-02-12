@@ -9,6 +9,8 @@ import { getLogger } from "@logtape/logtape";
 const BIOME_SUPPORTED_EXTENSIONS = new Set([
     ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs", ".json", ".jsonc"
 ]);
+const BLOCKED_FILES = new Set(["package-lock.json", "yarn.lock", "pnpm-lock.yaml"]);
+const MAX_WRITE_CHARS = 120_000;
 
 const logger = getLogger("secureWrite");
 
@@ -24,10 +26,25 @@ export async function handleSecureWrite(
     }
 
     const fullPath = path.resolve(projectRoot, relativePath);
+    const baseName = path.basename(relativePath);
 
     if (!fullPath.startsWith(path.resolve(projectRoot))) {
         logger.warn(chalk.red(`⚠️ REJECTED: Attempted write outside root: ${relativePath}`));
         throw new McpError(ErrorCode.InvalidParams, "❌ REJECTED: Cannot write outside project root.");
+    }
+
+    if (BLOCKED_FILES.has(baseName)) {
+        throw new McpError(
+            ErrorCode.InvalidParams,
+            "❌ REJECTED: Do not write lockfiles directly. Update package.json and use run_command to regenerate lockfiles."
+        );
+    }
+
+    if (finalCode.length > MAX_WRITE_CHARS) {
+        throw new McpError(
+            ErrorCode.InvalidParams,
+            `❌ REJECTED: Write payload too large (${finalCode.length} chars). Use focused edits instead of full-file rewrites.`
+        );
     }
 
     logger.info(chalk.blue.bold(`Starting secureWrite for: ${relativePath}`));

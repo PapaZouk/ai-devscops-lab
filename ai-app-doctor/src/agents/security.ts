@@ -26,7 +26,8 @@ LOOP PREVENTION & ESCAPE HATCH:
 STRICT STANDARDS:
 - Use relative paths exclusively.
 - Parallel tool calls are preferred.
-- DO NOT ADD COMMENTS to any files.`,
+- DO NOT ADD COMMENTS to any files.
+- NEVER read or write lockfiles directly (\`package-lock.json\`, \`pnpm-lock.yaml\`, \`yarn.lock\`). Use package-manager commands to regenerate them.`,
 
   defaultUserPrompt: "Identify the vulnerability, find the matching skill, and apply the fix.",
 

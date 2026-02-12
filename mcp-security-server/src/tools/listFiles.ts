@@ -5,6 +5,7 @@ import { getLogger } from "@logtape/logtape";
 import chalk from "chalk";
 
 const IGNORED_DIRECTORIES = new Set(['node_modules', '.git', 'dist', 'build', '.DS_Store']);
+const IGNORED_FILES = new Set(["package-lock.json", "yarn.lock", "pnpm-lock.yaml"]);
 const logger = getLogger("listFiles");
 
 export async function handleListFiles(
@@ -46,6 +47,7 @@ export async function handleListFiles(
 
         for (const entry of entries) {
             if (IGNORED_DIRECTORIES.has(entry.name)) continue;
+            if (IGNORED_FILES.has(entry.name)) continue;
 
             const entryRelativePath = path.join(requestedPath, entry.name);
             const isDirectory = entry.isDirectory();

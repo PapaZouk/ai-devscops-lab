@@ -5,6 +5,8 @@ import fs from "fs/promises";
 import { getLogger } from "@logtape/logtape";
 
 const logger = getLogger("readFile");
+const BLOCKED_FILES = new Set(["package-lock.json", "yarn.lock", "pnpm-lock.yaml"]);
+const MAX_READ_BYTES = 64 * 1024;
 
 export async function handleReadFile(
     projectRoot: string,
@@ -46,7 +48,22 @@ export async function handleReadFile(
         throw new McpError(ErrorCode.InvalidParams, "❌ ACCESS DENIED: Restricted path.");
     }
 
+    if (BLOCKED_FILES.has(path.basename(requestedPath))) {
+        throw new McpError(
+            ErrorCode.InvalidParams,
+            "❌ ACCESS DENIED: Lockfiles cannot be read directly. Use run_command to inspect or regenerate dependency state."
+        );
+    }
+
     try {
+        const stats = await fs.stat(fullPath);
+        if (stats.size > MAX_READ_BYTES) {
+            throw new McpError(
+                ErrorCode.InvalidParams,
+                `❌ FILE TOO LARGE: ${requestedPath} is ${stats.size} bytes. Use targeted reads or run_command to inspect it.`
+            );
+        }
+
         const content = await fs.readFile(fullPath, "utf-8");
         return {
             content: [{

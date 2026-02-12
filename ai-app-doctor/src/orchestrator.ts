@@ -21,6 +21,48 @@ openTelemetry.start();
 
 const logger = getLogger("orchestrator");
 
+const MAX_HISTORY_TOOL_ARGS = 1500;
+const MAX_HISTORY_TOOL_OUTPUT = 12000;
+
+function truncate(text: string, maxChars: number): string {
+    if (text.length <= maxChars) return text;
+    const omitted = text.length - maxChars;
+    return `${text.slice(0, maxChars)}\n...[truncated ${omitted} chars]`;
+}
+
+function sanitizeToolArgsForLog(rawArgs: string): string {
+    try {
+        const parsed = JSON.parse(rawArgs);
+        if (parsed && typeof parsed === "object") {
+            const shallow = { ...parsed };
+            for (const key of ["content", "code"]) {
+                if (typeof shallow[key] === "string") {
+                    shallow[key] = truncate(shallow[key], 500);
+                }
+            }
+            return JSON.stringify(shallow, null, 2);
+        }
+        return truncate(rawArgs, 500);
+    } catch {
+        return truncate(rawArgs, 500);
+    }
+}
+
+function sanitizeAssistantMessageForHistory(message: any) {
+    if (!message?.tool_calls?.length) return message;
+
+    return {
+        ...message,
+        tool_calls: message.tool_calls.map((call: any) => ({
+            ...call,
+            function: {
+                ...call.function,
+                arguments: truncate(call.function?.arguments || "{}", MAX_HISTORY_TOOL_ARGS)
+            }
+        }))
+    };
+}
+
 
 export async function startOrchestrator(config: AgentConfig, targetPath: string, userPrompt: string) {
     logger.info(chalk.blue.bold("🚀 Starting Orchestrator..."));
@@ -124,7 +166,7 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         });
 
         const message = response.choices[0].message;
-        messages.push(message);
+        messages.push(sanitizeAssistantMessageForHistory(message));
 
         logger.info(chalk.gray(`💬 Turn ${turns}: AI Message Received (role: ${message.role})`));
 
@@ -144,12 +186,7 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                 const rawArgs = call.function.arguments || "{}";
 
                 logger.info(chalk.yellow(`🔧 Tool: ${toolName}`));
-                try {
-                    const parsedArgs = JSON.parse(rawArgs);
-                    console.log(chalk.gray(JSON.stringify(parsedArgs, null, 2)));
-                } catch {
-                    console.log(chalk.red(`Failed to parse args: ${rawArgs}`));
-                }
+                console.log(chalk.gray(sanitizeToolArgsForLog(rawArgs)));
 
                 const toolKey = `${toolName}:${rawArgs}`;
                 const count = (toolRetryCounter.get(toolKey) || 0) + 1;
@@ -174,7 +211,7 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                         arguments: JSON.parse(rawArgs)
                     });
 
-                    let contentString = JSON.stringify(result.content);
+                    let contentString = truncate(JSON.stringify(result.content), MAX_HISTORY_TOOL_OUTPUT);
 
                     const toolText = result.content
                         .map((c: any) => (typeof c.text === "string" ? c.text : ""))
