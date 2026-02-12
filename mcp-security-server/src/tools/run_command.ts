@@ -112,90 +112,39 @@ export async function handleRunCommand(
 async function handleError(error: any, commandToExecute: string, projectRoot: string) {
     const errorOutput = joinOutput(error.stdout, error.stderr, error.message);
 
-    if (
-        commandToExecute.startsWith("git ")
-        && commandToExecute.includes(" commit ")
-        && /Author identity unknown|empty ident name/i.test(errorOutput)
-    ) {
-        try {
-            await configureGitIdentity(projectRoot);
-
-            const retry = await executeCommand(projectRoot, commandToExecute);
-
-            const retryOutput = joinOutput(retry.stdout, retry.stderr);
-
-            await saveAuditLog(
-                projectRoot,
-                commandToExecute,
-                "COMMAND_RECOVERED",
-                `[auto-configured git identity and retried commit]\n${retryOutput}`,
-            );
-
-            return {
-                content: [{
-                    type: "text" as const,
-                    text: `${retryOutput}\n\n[run_command] Auto-recovery applied: configured local git author identity and retried commit.`
-                }],
-                isError: false
+    switch (true) {
+        case commandToExecute.startsWith("git ") &&
+            commandToExecute.includes(" commit ") &&
+            /Author identity unknown|empty ident name/i.test(errorOutput): {
+                const recoveryResult = await handleGitCommitError(errorOutput, projectRoot, commandToExecute);
+                if (recoveryResult) return recoveryResult;
+                break;
+            }
+        case commandToExecute.startsWith("gh ") &&
+            commandToExecute.includes(" pr create") &&
+            /must first push the current branch to a remote|use the --head flag/i.test(errorOutput): {
+                const recoveryResult = await handleGitPullRequestCreationError(errorOutput, projectRoot, commandToExecute);
+                if (recoveryResult) return recoveryResult;
+                break;
+            }
+        case commandToExecute.startsWith("snyk") &&
+            /unauthenticated|login required|SNYK_TOKEN/i.test(errorOutput): {
+                const recoveryResult = await handleSnykAuthError(errorOutput, projectRoot, commandToExecute);
+                if (recoveryResult) return recoveryResult;
+                break;
+            }
+        case commandToExecute.startsWith("snyk test") &&
+            /Could not find supported package manager/i.test(errorOutput): {
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `❌ Snyk Error: No supported package manager found in the project directory. Please ensure your project has a supported package manager file (e.g., package.json for npm, pom.xml for Maven) and try again.`
+                    }],
+                    isError: false
+                }
             };
-        } catch (retryError: any) {
-            const retryErrorOutput = joinOutput(retryError.stdout, retryError.stderr, retryError.message);
-
-            await saveAuditLog(projectRoot, commandToExecute, "COMMAND_ERROR", `[recovery_failed]\n${retryErrorOutput}`);
-
-            return {
-                content: [{
-                    type: "text" as const,
-                    text: `❌ Command Failed after recovery:\n${retryErrorOutput}\n\nHint: Use 'path' for script files (e.g. ./skills/.../verify.sh) and 'command' for executables (e.g. git, gh).`
-                }],
-                isError: false
-            };
-        }
-    }
-
-    if (
-        commandToExecute.startsWith("gh ")
-        && commandToExecute.includes(" pr create")
-        && /must first push the current branch to a remote|use the --head flag/i.test(errorOutput)
-    ) {
-        try {
-            await executeCommand(projectRoot, "git push -u origin HEAD");
-
-            const retry = await executeCommand(projectRoot, commandToExecute);
-            const retryOutput = joinOutput(retry.stdout, retry.stderr);
-
-            await saveAuditLog(
-                projectRoot,
-                commandToExecute,
-                "COMMAND_RECOVERED",
-                `[auto-pushed HEAD and retried PR creation]\n${retryOutput}`
-            );
-
-            return {
-                content: [{
-                    type: "text" as const,
-                    text: `${retryOutput}\n\n[run_command] Auto-recovery applied: pushed HEAD and retried PR creation.`
-                }],
-                isError: false
-            };
-        } catch (retryError: any) {
-            const retryErrorOutput = joinOutput(retryError.stdout, retryError.stderr, retryError.message);
-
-            await saveAuditLog(
-                projectRoot,
-                commandToExecute,
-                "COMMAND_ERROR",
-                `[recovery_failed]\n${retryErrorOutput}`
-            );
-
-            return {
-                content: [{
-                    type: "text" as const,
-                    text: `❌ Command Failed after recovery:\n${retryErrorOutput}\n\nHint: Use 'path' for script files (e.g. ./skills/.../verify.sh) and 'command' for executables (e.g. git, gh).`
-                }],
-                isError: false
-            };
-        }
+        default:
+            break;
     }
 
     await saveAuditLog(projectRoot, commandToExecute, 'COMMAND_ERROR', errorOutput);
@@ -207,4 +156,110 @@ async function handleError(error: any, commandToExecute: string, projectRoot: st
         }],
         isError: false
     };
+}
+
+async function handleGitCommitError(errorOutput: string, projectRoot: string, commandToExecute: string) {
+    try {
+        await configureGitIdentity(projectRoot);
+
+        const retry = await executeCommand(projectRoot, commandToExecute);
+        const retryOutput = joinOutput(retry.stdout, retry.stderr);
+
+        await saveAuditLog(
+            projectRoot,
+            commandToExecute,
+            "COMMAND_RECOVERED",
+            `[auto-configured git identity and retried commit]\n${retryOutput}`
+        );
+
+        return {
+            content: [{
+                type: "text" as const,
+                text: `${retryOutput}\n\n[run_command] Auto-recovery applied: configured local git author identity and retried commit.`
+            }],
+            isError: false
+        };
+    } catch (retryError: any) {
+        const retryErrorOutput = joinOutput(retryError.stdout, retryError.stderr, retryError.message);
+
+        await saveAuditLog(projectRoot, commandToExecute, "COMMAND_ERROR", `[recovery_failed]\n${retryErrorOutput}`);
+
+        return {
+            content: [{
+                type: "text" as const,
+                text: `❌ Command Failed after recovery:\n${retryErrorOutput}\n\nHint: Use 'path' for script files (e.g. ./skills/.../verify.sh) and 'command' for executables (e.g. git, gh).`
+            }],
+            isError: false
+        };
+    }
+}
+
+async function handleGitPullRequestCreationError(errorOutput: string, projectRoot: string, commandToExecute: string) {
+    try {
+        await executeCommand(projectRoot, "git push -u origin HEAD");
+
+        const retry = await executeCommand(projectRoot, commandToExecute);
+        const retryOutput = joinOutput(retry.stdout, retry.stderr);
+
+        await saveAuditLog(
+            projectRoot,
+            commandToExecute,
+            "COMMAND_RECOVERED",
+            `[auto-pushed HEAD and retried PR creation]\n${retryOutput}`
+        );
+
+        return {
+            content: [{
+                type: "text" as const,
+                text: `${retryOutput}\n\n[run_command] Auto-recovery applied: pushed HEAD and retried PR creation.`
+            }],
+            isError: false
+        };
+    } catch (retryError: any) {
+        const retryErrorOutput = joinOutput(retryError.stdout, retryError.stderr, retryError.message);
+
+        await saveAuditLog(
+            projectRoot,
+            commandToExecute,
+            "COMMAND_ERROR",
+            `[recovery_failed]\n${retryErrorOutput}`
+        );
+
+        return {
+            content: [{
+                type: "text" as const,
+                text: `❌ Command Failed after recovery:\n${retryErrorOutput}\n\nHint: Use 'path' for script files (e.g. ./skills/.../verify.sh) and 'command' for executables (e.g. git, gh).`
+            }],
+            isError: false
+        };
+    }
+}
+
+async function handleSnykAuthError(errorOutput: string, projectRoot: string, commandToExecute: string) {
+    try {
+        logger.info(chalk.yellow("🔧 Snyk Auth missing. Attempting recovery via SNYK_TOKEN environment..."));
+
+        if (process.env.SNYK_TOKEN) {
+            await executeCommand(projectRoot, `snyk auth ${process.env.SNYK_TOKEN}`);
+
+            const retry = await executeCommand(projectRoot, commandToExecute);
+            const retryOutput = joinOutput(retry.stdout, retry.stderr);
+
+            await saveAuditLog(projectRoot, commandToExecute, "COMMAND_RECOVERED", `[auto-authenticated snyk]\n${retryOutput}`);
+            return { content: [{ type: "text", text: `${retryOutput}\n\n[run_command] Auto-recovery: Authenticated Snyk and retried.` }], isError: false };
+        }
+    } catch (retryError: any) {
+        logger.error("❌ Snyk recovery failed.");
+        const retryErrorOutput = joinOutput(retryError.stdout, retryError.stderr, retryError.message);
+
+        await saveAuditLog(projectRoot, commandToExecute, "COMMAND_ERROR", `[snyk_recovery_failed]\n${retryErrorOutput}`);
+
+        return {
+            content: [{
+                type: "text" as const,
+                text: `❌ Command Failed after Snyk recovery:\n${retryErrorOutput}\n\nHint: Ensure SNYK_TOKEN is set for authentication.`
+            }],
+            isError: false
+        };
+    }
 }

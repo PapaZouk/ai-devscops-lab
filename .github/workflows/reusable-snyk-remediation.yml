@@ -1,0 +1,94 @@
+name: "Snyk AI Remediation"
+
+on:
+  workflow_call:
+    inputs:
+      target_repository:
+        description: 'The full name of the repo to fix'
+        required: true
+        type: string
+      llm_url:
+        description: 'The URL of the LLM service'
+        required: true
+        type: string
+      llm_model_name:
+        description: 'The name of the LLM model to use'
+        required: true
+        type: string
+      run_environment:
+        description: 'The environment to run the fixes in (e.g., prod, staging)'
+        required: false
+        type: string
+      skip_delivery:
+        description: 'Whether to skip the delivery of fixes'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      SNYK_TOKEN:
+        description: 'Snyk API Token'
+        required: true
+      LM_API_KEY:
+        required: true
+      GH_TOKEN:
+        required: true
+
+jobs:
+  snyk-scan-and-fix:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_DIR: ${{ github.workspace }}/target-repo
+      TOOLS_DIR: ${{ github.workspace }}/ai-tools
+      REPORT_PATH: ${{ github.workspace }}/snyk_report.json
+
+    steps:
+      - name: Checkout AI Tools
+        uses: actions/checkout@v4
+        with:
+          repository: PapaZouk/ai-devscops-lab
+          path: ai-tools
+
+      - name: Checkout Target Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.target_repository }}
+          path: target-repo
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-versioqn: 20
+          cache: 'npm'
+          cache-dependency-path: 'ai-tools/ai-app-doctor/package-lock.json'
+
+      - name: Install Snyk & Run Scan
+        run: |
+          npm install -g snyk
+          snyk auth ${{ secrets.SNYK_TOKEN }}
+
+          # || true ensures the workflow continues even if vulnerabilities are found
+          snyk test --json --project-name=${{ inputs.target_repository }} > $REPORT_PATH || true
+          echo "✅ Snyk scan completed. Report saved to $REPORT_PATH"
+
+      - name: Build AI Tools
+        run: |
+          cd $TOOLS_DIR/mcp-security-server && npm install && npm run build
+          cd $TOOLS_DIR/ai-app-doctor && npm install
+
+      - name: Run AI Agent Fixer
+        run: |
+          cd $TOOLS_DIR/ai-app-doctor
+
+          npx tsx src/main.ts \
+            --agent=security \
+            --target=$TARGET_DIR \
+            --input="Review the Snyk vulnerability report at $REPORT_PATH and apply necessary code fixes to the target repository."
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          LM_API_KEY: ${{ secrets.LM_API_KEY }}
+          LM_BASE_URL: ${{ inputs.llm_url }}
+          LM_MODEL_NAME: ${{ inputs.llm_model_name }}
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          # Ensures logs are kept during the session
+          DEBUG: "orchestrator:*"
