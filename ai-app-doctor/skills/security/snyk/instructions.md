@@ -12,6 +12,11 @@
 - **Tool Safety (Mandatory):** Do NOT call `read_file` or `write_file` for any lockfile (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`).
 - **Allowed Flow:** If remediation requires dependency changes, edit only `package.json` and run `run_command` with npm/pnpm/yarn to regenerate lockfiles.
 
+## Domain Rule: Stability Remediation
+- **Requirement:** If a security patch breaks a regression test, the agent is authorized to modify source code to maintain compatibility with the new dependency version.
+- **Constraint:** Do not modify the test logic to make it "pass" if the underlying application behavior is actually broken.
+- **Verification:** Any source code change made to fix a test must be documented in the PR description.
+
 ## Execution Protocol
 1. **Analyze:** Parse the Snyk report provided in the task context to identify specific targets.
 2. **Patch:** Apply the remediation logic.
@@ -25,6 +30,13 @@
    - **Manifest-only edit:** Use `write_file` on `package.json` only.
    - **Regenerate dependencies:** Use `run_command(command="npm", args=["install"])` (or equivalent package manager command).
    - **Forbidden:** Never inspect or patch lockfiles with `read_file`/`write_file`.
+5. **The Repair Loop:**
+    1. **Detect:** Run `skills/testing/regression/run_tests.sh`.
+    2. **Analyze:** If failures occur, read `test_results.json` and the `STDERR` logs.
+    3. **Triage:** - Is it a "Method not found" or "Type error"? -> **Fix the call site in source code.**
+    - Is it a timeout or environmental issue? -> **Retry once.**
+    4. **Iterate:** After the code fix, re-run **Verify Security** AND **Verify Stability**.
+    5. **Escalate:** If the fix requires architectural changes (e.g., changing the database schema), ROLLBACK the dependency update and document the "Blocking Breaking Change" in `snyk_actions.log`.
 
 ## PROTOCOL: CLINICAL DELIVERY
 - Before finishing, you MUST consult `skills/git/delivery/instructions.md`.
@@ -38,3 +50,4 @@
 - `snyk_actions.log` contains a timestamped record of the "treatment."
 - No absolute paths or prohibited shell flags (`-lc`, `$(pwd)`) were used.
 - No lockfile was read or written via `read_file`/`write_file`.
+- Regression tests show 0 
