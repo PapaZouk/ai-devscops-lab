@@ -6,7 +6,7 @@ on:
       vulnerability_description:
         required: true
         type: string
-      llm_url:
+      llm_ugrl:
         required: true
         type: string
       llm_model_name:
