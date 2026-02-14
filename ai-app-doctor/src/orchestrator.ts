@@ -63,6 +63,79 @@ function sanitizeAssistantMessageForHistory(message: any) {
     };
 }
 
+async function seedSnykMemories(client: Client, targetPath: string) {
+    const reportPath = path.join(targetPath, "snyk_report.json");
+    if (!fs.existsSync(reportPath)) return;
+
+    try {
+        const raw = await fs.promises.readFile(reportPath, "utf8");
+        const report = JSON.parse(raw);
+
+        const vulnerabilities = Array.isArray(report?.vulnerabilities) ? report.vulnerabilities : [];
+        const upgrades = report?.remediation?.upgrade && typeof report.remediation.upgrade === "object"
+            ? Object.values(report.remediation.upgrade).map((entry: any) => entry?.upgradeTo).filter(Boolean)
+            : [];
+
+        const summary = JSON.stringify({
+            ok: !!report?.ok,
+            severityThreshold: report?.severityThreshold ?? null,
+            summary: report?.summary ?? null,
+            vulnerabilityCount: vulnerabilities.length
+        });
+
+        const topVulns = JSON.stringify(
+            vulnerabilities.slice(0, 10).map((v: any) => ({
+                id: v?.id,
+                title: v?.title,
+                severity: v?.severity,
+                packageName: v?.packageName,
+                version: v?.version,
+                fixedIn: v?.fixedIn ?? [],
+                upgradePath: v?.upgradePath ?? []
+            }))
+        );
+
+        const upgradePlan = JSON.stringify(Array.from(new Set(upgrades)));
+
+        await client.callTool({
+            name: "manage_memory",
+            arguments: { action: "store", key: "snyk_summary", value: summary }
+        });
+        await client.callTool({
+            name: "manage_memory",
+            arguments: { action: "store", key: "snyk_upgrade_plan", value: upgradePlan }
+        });
+        await client.callTool({
+            name: "manage_memory",
+            arguments: { action: "store", key: "snyk_top_vulns", value: topVulns }
+        });
+
+        logger.info(chalk.magenta("🧠 Seeded memory: snyk_summary, snyk_upgrade_plan, snyk_top_vulns"));
+    } catch (err: any) {
+        logger.warn(chalk.yellow(`⚠️ Could not seed Snyk memory: ${err.message}`));
+    }
+}
+
+async function clearSnykMemories(client: Client) {
+    try {
+        await client.callTool({
+            name: "manage_memory",
+            arguments: { action: "store", key: "snyk_summary", value: "{\"cleared\":true}" }
+        });
+        await client.callTool({
+            name: "manage_memory",
+            arguments: { action: "store", key: "snyk_upgrade_plan", value: "[]" }
+        });
+        await client.callTool({
+            name: "manage_memory",
+            arguments: { action: "store", key: "snyk_top_vulns", value: "[]" }
+        });
+        logger.info(chalk.magenta("🧹 Cleared Snyk memory after successful run."));
+    } catch (err: any) {
+        logger.warn(chalk.yellow(`⚠️ Could not clear Snyk memory: ${err.message}`));
+    }
+}
+
 
 export async function startOrchestrator(config: AgentConfig, targetPath: string, userPrompt: string) {
     logger.info(chalk.blue.bold("🚀 Starting Orchestrator..."));
@@ -113,6 +186,8 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     const { tools } = await client.listTools();
     logger.info(chalk.green.bold(`🛠 Discovered ${tools.length} tools.`));
 
+    await seedSnykMemories(client, targetPath);
+
     const url = process.env.LM_BASE_URL || "http://localhost:1234/v1";
     const apiKey = process.env.LM_API_KEY || "lm-studio";
     logger.info(chalk.blue(`Using LLM at ${url} with model ${config.model}`));
@@ -153,6 +228,8 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     let turns = 0;
     const maxTurns = 40;
     const toolRetryCounter = new Map<string, number>();
+    let sawCircuitBreaker = false;
+    let finalAssistantMessage = "";
 
     while (turns < maxTurns) {
         turns++;
@@ -193,6 +270,7 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                 toolRetryCounter.set(toolKey, count);
 
                 if (count > 3) {
+                    sawCircuitBreaker = true;
                     logger.warn(chalk.red(`🛑 Circuit Breaker: ${toolName} reached max retries.`));
                     toolOutputs.push({
                         role: "tool",
@@ -242,10 +320,15 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
             }
 
             messages.push(...toolOutputs);
+            if (sawCircuitBreaker) {
+                logger.warn(chalk.red("🛑 Stopping early due to circuit breaker."));
+                break;
+            }
             continue;
         }
 
         if (message.content) {
+            finalAssistantMessage = message.content;
             logger.info(chalk.cyan(`\n🤖 AI Final Response:\n${message.content}`));
             break;
         }
@@ -255,7 +338,15 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         logger.warn(chalk.red("⚠️ Maximum turns reached."));
     }
 
+    if (sawCircuitBreaker) {
+        await client.close();
+        await transport.close();
+        return { success: false, report: "Workflow failed: tool retry limit reached during remediation." };
+    }
+
+    await clearSnykMemories(client);
     await client.close();
     await transport.close();
-    return { success: true, report: "Workflow completed." };
+
+    return { success: true, report: finalAssistantMessage || "Workflow completed." };
 }

@@ -1,6 +1,7 @@
 node_modules/
 output/
 tmp/
+target-repo/
 .DS_Store
 *.bak
 *.tmp
@@ -9,3 +10,4 @@ tmp/
 *.db
 security_audit.db
 .env
+*.secret

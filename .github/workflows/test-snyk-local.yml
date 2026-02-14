@@ -1,0 +1,17 @@
+name: Local Snyk Test Trigger
+on: [workflow_dispatch]
+
+jobs:
+  test-snyk-fix:
+    uses: ./.github/workflows/reusable-snyk-remediation.yml
+    with:
+      target_repository: ${{ github.repository }}
+      target_subdirectory: "patients/victim-app"
+      llm_url: "http://host.docker.internal:1234/v1" 
+      llm_model_name: "openai/gpt-oss-20b"
+      run_environment: 'dev'
+      skip_delivery: true 
+    secrets:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      LM_API_KEY: ${{ secrets.LM_API_KEY }}
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}

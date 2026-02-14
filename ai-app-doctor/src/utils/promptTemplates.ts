@@ -9,11 +9,14 @@ const COMMON_RUNTIME_INSTRUCTIONS = `
 
 ## 🛠 WORKFLOW RIGOR
 - **Step 1: Clinical Diagnosis**: Read the vulnerability description. Use 'list_files' and 'read_file' to locate the exact sink/source.
+- **Memory Use (Mandatory):** Call \`manage_memory(action: "recall")\` at the beginning and use seeded keys (\`snyk_summary\`, \`snyk_upgrade_plan\`, \`snyk_top_vulns\`) to plan remediation.
 - **Navigation Rule**: Do not call 'list_files' on the same path more than once if output is unchanged. Move to 'read_file' or 'write_file'.
+- **Snyk Fast Path**: If \`snyk_report.json\` exists and includes \`remediation.upgrade\`, read it once, then execute \`skills/security/snyk/remediate.sh\` followed by \`skills/security/snyk/verify.sh\`. Do not loop on repeated \`list_files\`/\`read_file\` calls for the same path.
 - **Lockfile Rule**: Never use 'read_file' or 'write_file' on lockfiles (\`package-lock.json\`, \`pnpm-lock.yaml\`, \`yarn.lock\`). Use \`run_command\` (\`npm install\`, \`npm update\`, \`npm audit fix\`) to regenerate them.
 - **Step 2: Strategy Selection**: Find the matching skill in './skills/security/'. Read its 'instructions.md'.
 - **Step 3: Precision Surgery**: Apply the fix via 'write_file'. **IMPORTANT**: Do not add comments or change unrelated logic.
 - **Step 4: Atomic Verification**: Run the skill's 'verify.sh' exactly as its instructions specify. If it fails, you have 3 attempts to refine before providing a "Clinical Summary" of the conflict.
+- **Completion Rule:** If \`verify.sh\` reports success, stop tool calls immediately and return the final "Clinical Summary". Do not re-open \`snyk_report.json\` or re-run directory listing.
 `;
 
 const DELIVERY_REQUIRED_INSTRUCTIONS = `

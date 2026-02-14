@@ -7,6 +7,10 @@ on:
         description: 'The full name of the repo to fix'
         required: true
         type: string
+      target_subdirectory:
+        description: 'Optional subdirectory inside the target repository to scan/fix'
+        required: false
+        type: string
       llm_url:
         description: 'The URL of the LLM service'
         required: true
@@ -37,6 +41,7 @@ jobs:
   snyk-scan-and-fix:
     runs-on: ubuntu-latest
     env:
+      TARGET_REPO_DIR: ${{ github.workspace }}/target-repo
       TARGET_DIR: ${{ github.workspace }}/target-repo
       TOOLS_DIR: ${{ github.workspace }}/ai-tools
       REPORT_PATH: ${{ github.workspace }}/target-repo/snyk_report.json
@@ -55,6 +60,47 @@ jobs:
           path: target-repo
           token: ${{ secrets.GH_TOKEN }}
 
+      - name: Ensure AI tools layout for local act runs
+        run: |
+          # In local `act --bind` runs, checkout path materialization can differ.
+          # Keep expected ai-tools/* paths available without changing CI behavior.
+          if [ ! -d "$TOOLS_DIR/ai-app-doctor" ] && [ -d "${{ github.workspace }}/ai-app-doctor" ]; then
+            mkdir -p "$TOOLS_DIR"
+            ln -s "${{ github.workspace }}/ai-app-doctor" "$TOOLS_DIR/ai-app-doctor"
+          fi
+
+          if [ ! -d "$TOOLS_DIR/mcp-security-server" ] && [ -d "${{ github.workspace }}/mcp-security-server" ]; then
+            mkdir -p "$TOOLS_DIR"
+            ln -s "${{ github.workspace }}/mcp-security-server" "$TOOLS_DIR/mcp-security-server"
+          fi
+
+          # In local/dev runs, prefer local workspace tool code over checked-out remote copy.
+          if [ "${{ inputs.run_environment }}" = "dev" ] && [ -d "${{ github.workspace }}/ai-app-doctor" ]; then
+            rm -rf "$TOOLS_DIR/ai-app-doctor"
+            ln -s "${{ github.workspace }}/ai-app-doctor" "$TOOLS_DIR/ai-app-doctor"
+          fi
+
+          if [ "${{ inputs.run_environment }}" = "dev" ] && [ -d "${{ github.workspace }}/mcp-security-server" ]; then
+            rm -rf "$TOOLS_DIR/mcp-security-server"
+            ln -s "${{ github.workspace }}/mcp-security-server" "$TOOLS_DIR/mcp-security-server"
+          fi
+
+      - name: Resolve target directory
+        run: |
+          TARGET_DIR="$TARGET_REPO_DIR"
+          if [ -n "${{ inputs.target_subdirectory }}" ]; then
+            TARGET_DIR="$TARGET_REPO_DIR/${{ inputs.target_subdirectory }}"
+          fi
+
+          if [ ! -d "$TARGET_DIR" ]; then
+            echo "::error::Target directory not found: $TARGET_DIR"
+            exit 1
+          fi
+
+          echo "TARGET_DIR=$TARGET_DIR" >> "$GITHUB_ENV"
+          echo "REPORT_PATH=$TARGET_DIR/snyk_report.json" >> "$GITHUB_ENV"
+          echo "Using TARGET_DIR=$TARGET_DIR"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -64,13 +110,22 @@ jobs:
 
       - name: Install Snyk & Run Scan
         run: |
-          npm install -g snyk
-          snyk auth ${{ secrets.SNYK_TOKEN }}
-          cd $TARGET_DIR
+          SCAN_SCRIPT="$TOOLS_DIR/scripts/run_snyk_scan.sh"
+          if [ ! -f "$SCAN_SCRIPT" ] && [ -f "${{ github.workspace }}/scripts/run_snyk_scan.sh" ]; then
+            SCAN_SCRIPT="${{ github.workspace }}/scripts/run_snyk_scan.sh"
+          fi
 
-          # || true ensures the workflow continues even if vulnerabilities are found
-          snyk test --json --project-name=${{ inputs.target_repository }} > $REPORT_PATH || true
-          echo "✅ Snyk scan completed. Report saved to $REPORT_PATH"
+          if [ ! -f "$SCAN_SCRIPT" ]; then
+            echo "::error::Snyk scan script not found in ai-tools or workspace scripts directory."
+            exit 1
+          fi
+
+          bash "$SCAN_SCRIPT" \
+            "$TARGET_DIR" \
+            "$REPORT_PATH" \
+            "${{ inputs.target_repository }}"
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
       - name: Build AI Tools
         run: |
