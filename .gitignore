@@ -10,4 +10,4 @@ target-repo/
 *.db
 security_audit.db
 .env
-*.secret
+*.secrets

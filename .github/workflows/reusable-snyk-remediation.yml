@@ -51,6 +51,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PapaZouk/ai-devscops-lab
+          ref: feature-remedaite-snyk-with-memory-tool
           path: ai-tools
 
       - name: Checkout Target Repository
@@ -110,7 +111,13 @@ jobs:
 
       - name: Install Snyk & Run Scan
         run: |
-          SCAN_SCRIPT="$TOOLS_DIR/scripts/run_snyk_scan.sh"
+          SCAN_SCRIPT="$TOOLS_DIR/ai-app-doctor/scripts/run_snyk_scan.sh"
+          if [ ! -f "$SCAN_SCRIPT" ] && [ -f "$TOOLS_DIR/scripts/run_snyk_scan.sh" ]; then
+            SCAN_SCRIPT="$TOOLS_DIR/scripts/run_snyk_scan.sh"
+          fi
+          if [ ! -f "$SCAN_SCRIPT" ] && [ -f "${{ github.workspace }}/ai-app-doctor/scripts/run_snyk_scan.sh" ]; then
+            SCAN_SCRIPT="${{ github.workspace }}/ai-app-doctor/scripts/run_snyk_scan.sh"
+          fi
           if [ ! -f "$SCAN_SCRIPT" ] && [ -f "${{ github.workspace }}/scripts/run_snyk_scan.sh" ]; then
             SCAN_SCRIPT="${{ github.workspace }}/scripts/run_snyk_scan.sh"
           fi
