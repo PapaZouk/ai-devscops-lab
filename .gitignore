@@ -1,6 +1,14 @@
 node_modules/
 output/
 tmp/
+
+build/
+dist/
+coverage/
+mcp-unit-test-server/node_modules/
+mcp-unit-test-server/build/
+mcp-unit-test-server/dist/
+
 .DS_Store
 *.bak
 *.tmp
@@ -9,3 +17,6 @@ tmp/
 *.db
 security_audit.db
 .env
+.secrets
+.agents/
+target-repo/
