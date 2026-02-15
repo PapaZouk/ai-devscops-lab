@@ -1277,8 +1277,20 @@ a broken configuration.`,
           const hasUnitDir = structure.testFiles.some((f) =>
             f.includes("/tests/unit/") || f.includes("\\tests\\unit\\")
           );
+          const hasSrcTests = structure.testFiles.some((f) =>
+            (f.includes("/src/") || f.includes("\\src\\")) &&
+            (f.includes("/__tests__/") || f.includes("\\__tests__\\"))
+          );
+          const hasAnyDoubleUnderscoreTests = structure.testFiles.some((f) =>
+            f.includes("/__tests__/") || f.includes("\\__tests__\\")
+          );
+
           if (hasUnitDir) {
             effectiveTestPathPattern = "tests/unit";
+          } else if (hasSrcTests) {
+            effectiveTestPathPattern = "src";
+          } else if (hasAnyDoubleUnderscoreTests) {
+            effectiveTestPathPattern = "__tests__";
           }
         }
 

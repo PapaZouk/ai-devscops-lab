@@ -164,6 +164,8 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     const isTestingAgent = config.name.toLowerCase().includes("testing");
     let hasPassingTestRun = false;
     let finalizationGuardPrompts = 0;
+    let allowFailureSummaryFinalization = false;
+    let lastRunTestsSummary: string | null = null;
 
     while (turns < maxTurns) {
         turns++;
@@ -224,9 +226,12 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                         arguments: JSON.parse(rawArgs)
                     });
 
-                    let contentString = truncate(JSON.stringify(result.content), MAX_HISTORY_TOOL_OUTPUT);
+                    const resultContent = Array.isArray((result as any).content)
+                        ? (result as any).content
+                        : [];
+                    let contentString = truncate(JSON.stringify(resultContent), MAX_HISTORY_TOOL_OUTPUT);
 
-                    const toolText = result.content
+                    const toolText = resultContent
                         .map((c: any) => (typeof c.text === "string" ? c.text : ""))
                         .filter(Boolean)
                         .join("\n");
@@ -238,6 +243,21 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                     if (toolName === "run_tests" && toolText) {
                         try {
                             const parsed = JSON.parse(toolText);
+                            if (parsed?.summary || typeof parsed?.stderr === "string") {
+                                lastRunTestsSummary = JSON.stringify(
+                                    {
+                                        passed: parsed?.passed,
+                                        exitCode: parsed?.exitCode,
+                                        summary: parsed?.summary,
+                                        effectiveTestPathPattern: parsed?.effectiveTestPathPattern ?? null,
+                                        stderr: typeof parsed?.stderr === "string"
+                                            ? truncate(parsed.stderr, 800)
+                                            : "",
+                                    },
+                                    null,
+                                    2
+                                );
+                            }
                             if (parsed?.passed === true) {
                                 hasPassingTestRun = true;
                             }
@@ -270,7 +290,7 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         }
 
         if (message.content) {
-            if (isTestingAgent && !hasPassingTestRun) {
+            if (isTestingAgent && !hasPassingTestRun && !allowFailureSummaryFinalization) {
                 finalizationGuardPrompts += 1;
                 logger.warn(
                     chalk.yellow(
@@ -279,12 +299,18 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                 );
 
                 if (finalizationGuardPrompts >= 3) {
-                    logger.error(
-                        chalk.red(
-                            "❌ Stopping: testing agent could not produce a passing run_tests result before finalization."
+                    logger.warn(
+                        chalk.yellow(
+                            "⚠️ Passing run_tests result not achieved. Allowing failure-summary finalization."
                         )
                     );
-                    break;
+                    messages.push({
+                        role: "system",
+                        content:
+                            "You may now finalize with a failure summary only. Do not claim success. Include failing test scope, root cause, and next concrete fix."
+                    });
+                    allowFailureSummaryFinalization = true;
+                    continue;
                 }
 
                 messages.push({
@@ -297,6 +323,9 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
 
             consecutiveEmptyAssistantTurns = 0;
             logger.info(chalk.cyan(`\n🤖 AI Final Response:\n${message.content}`));
+            if (allowFailureSummaryFinalization && lastRunTestsSummary) {
+                logger.info(chalk.cyan(`\n🧪 Last run_tests summary:\n${lastRunTestsSummary}`));
+            }
             break;
         }
 

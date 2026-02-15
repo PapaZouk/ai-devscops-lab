@@ -23,6 +23,7 @@ on:
         description: 'Optional ref/branch for ai-tools checkout'
         required: false
         type: string
+        default: 'feature-add-unit-tests-workflow'
       run_environment:
         description: 'The environment to run the implementation in (e.g., dev, staging)'
         required: false
@@ -41,12 +42,13 @@ jobs:
         TARGET_DIR: ${{ github.workspace }}/target-repo
         TOOLS_DIR: ${{ github.workspace }}/ai-tools
         LOCAL_SRC_DIR: ${{ github.workspace }}/local-src
+        AI_TOOLS_REF: ${{ inputs.ai_tools_ref || 'feature-add-unit-tests-workflow' }}
     steps:
       - name: Checkout AI Tools
         uses: actions/checkout@v4
         with:
           repository: PapaZouk/ai-devscops-lab
-          ref: ${{ inputs.ai_tools_ref }}
+          ref: ${{ env.AI_TOOLS_REF }}
           path: ai-tools
 
       - name: Checkout Local Source (dev)
@@ -148,8 +150,21 @@ jobs:
 
       - name: Build AI Tools
         run: |
-          cd $TOOLS_DIR/mcp-unit-test-server && npm install && npm run build
-          cd $TOOLS_DIR/ai-app-doctor && npm install
+          if [ ! -d "$TOOLS_DIR/mcp-unit-test-server" ]; then
+            echo "::error::Missing $TOOLS_DIR/mcp-unit-test-server in checked out ai-tools ref '$AI_TOOLS_REF'."
+            echo "::error::Use an ai_tools_ref that contains mcp-unit-test-server (for example, feature-add-unit-tests-workflow or newer)."
+            echo "::group::ai-tools directory listing"
+            ls -la "$TOOLS_DIR" || true
+            echo "::endgroup::"
+            exit 1
+          fi
+
+          cd $TOOLS_DIR/mcp-unit-test-server
+          npm install
+          npm run build
+
+          cd $TOOLS_DIR/ai-app-doctor
+          npm install
           if [ "${{ inputs.run_environment }}" != "dev" ]; then
             npm run build
           fi
