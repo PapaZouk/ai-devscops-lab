@@ -13,7 +13,7 @@
  *   check_coverage_gaps     — Diff source vs existing tests to find missing coverage
  *   suggest_mock_strategy   — Return ready-to-use mock snippets for detected dependencies
  *   get_jest_config_template — Generate a tailored jest.config.ts
- *   install_test_dependencies — Install only approved test dependencies
+ *   install_test_dependencies — Install only approved test dependencies (Jest + Supertest)
  *
  * Resources:
  *   testing-patterns://jest-best-practices

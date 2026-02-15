@@ -6,6 +6,7 @@ import { toolLogger } from "../logger.js";
 import { analyzeSourceFile } from "../utils/sourceAnalyzer.js";
 import { generateTestScaffold, deriveTestFilePath } from "../utils/testGenerator.js";
 import { scanProjectStructure } from "../utils/projectScanner.js";
+import { parseJsonOrJsonc } from "../utils/jsonParsing.js";
 
 // ─── PROJECT_ROOT resolution ───────────────────────────────────────────────────
 //
@@ -46,7 +47,13 @@ function resolveProjectPath(userPath?: string | null): string {
   return path.resolve(root, userPath);
 }
 
-const ALLOWED_TEST_PACKAGES = ["jest", "@types/jest", "ts-jest"] as const;
+const ALLOWED_TEST_PACKAGES = [
+  "jest",
+  "@types/jest",
+  "ts-jest",
+  "supertest",
+  "@types/supertest",
+] as const;
 type AllowedTestPackage = (typeof ALLOWED_TEST_PACKAGES)[number];
 
 /** Register all tools on the MCP server */
@@ -1053,7 +1060,10 @@ and a recommended fix for each issue.`,
         if (hasTS) {
           try {
             const tsraw = await fs.readFile(path.join(scanPath, "tsconfig.json"), "utf-8");
-            const tsconfig = JSON.parse(tsraw) as Record<string, unknown>;
+            const tsconfig = parseJsonOrJsonc(tsraw);
+            if (!tsconfig) {
+              throw new Error("Invalid tsconfig.json format");
+            }
             const co = (tsconfig.compilerOptions as Record<string, unknown>) ?? {};
 
             if (!co.strict) {
@@ -1207,8 +1217,9 @@ a broken configuration.`,
       const { spawn } = await import("node:child_process");
 
       try {
-        const scanPath    = resolveProjectPath(null);
+        const scanPath = resolveProjectPath(null);
         const projectRoot = getProjectRoot();
+        const structure = await scanProjectStructure(scanPath);
 
         // ── Runner selection ────────────────────────────────────────────────
         // Prefer project-defined npm test script so repo-specific config
@@ -1216,14 +1227,17 @@ a broken configuration.`,
         let jestBin = path.join(scanPath, "node_modules", ".bin", "jest");
         let useNpm = false;
         let hasTestScript = false;
+        let isEsmPackage = false;
 
         try {
           const pkgRaw = await fs.readFile(path.join(scanPath, "package.json"), "utf-8");
-          const pkg = JSON.parse(pkgRaw) as { scripts?: Record<string, string> };
+          const pkg = parseJsonOrJsonc(pkgRaw) as { scripts?: Record<string, string>; type?: string } | null;
           hasTestScript =
             typeof pkg?.scripts?.test === "string" && pkg.scripts.test.trim().length > 0;
+          isEsmPackage = pkg?.type === "module";
         } catch {
           hasTestScript = false;
+          isEsmPackage = false;
         }
 
         if (hasTestScript) {
@@ -1256,10 +1270,22 @@ a broken configuration.`,
           args = ["test", "--"];
         }
 
-        if (test_path_pattern) {
-          const resolvedPattern = path.isAbsolute(test_path_pattern)
-            ? test_path_pattern
-            : path.join(projectRoot, test_path_pattern);
+        let effectiveTestPathPattern = test_path_pattern;
+        if (!effectiveTestPathPattern) {
+          // Default to unit tests when available so missing integration dependencies
+          // (express/supertest/server wiring) don't block unit-test workflows.
+          const hasUnitDir = structure.testFiles.some((f) =>
+            f.includes("/tests/unit/") || f.includes("\\tests\\unit\\")
+          );
+          if (hasUnitDir) {
+            effectiveTestPathPattern = "tests/unit";
+          }
+        }
+
+        if (effectiveTestPathPattern) {
+          const resolvedPattern = path.isAbsolute(effectiveTestPathPattern)
+            ? effectiveTestPathPattern
+            : path.join(projectRoot, effectiveTestPathPattern);
           args.push(resolvedPattern);
         }
 
@@ -1302,7 +1328,22 @@ a broken configuration.`,
 
           const child = spawn(jestBin, args, {
             cwd: scanPath,
-            env: { ...process.env, FORCE_COLOR: "0", CI: "true" },
+            env: {
+              ...process.env,
+              FORCE_COLOR: "0",
+              CI: "true",
+              // ESM TypeScript projects need this for Jest runtime to execute ESM test modules.
+              ...(isEsmPackage
+                ? {
+                    NODE_OPTIONS: [
+                      process.env.NODE_OPTIONS ?? "",
+                      "--experimental-vm-modules",
+                    ]
+                      .join(" ")
+                      .trim(),
+                  }
+                : {}),
+            },
             shell: useNpm,
           });
 
@@ -1380,6 +1421,7 @@ a broken configuration.`,
               // Full output — the agent can read it to diagnose specific failures
               stdout: result.stdout.slice(0, 8000),  // cap at 8 KB
               stderr: result.stderr.slice(0, 4000),
+              effectiveTestPathPattern: effectiveTestPathPattern ?? null,
               hint: passed
                 ? "All tests passed."
                 : result.timedOut
@@ -1405,10 +1447,10 @@ a broken configuration.`,
   // ───────────────────────────────────────────────────────────────────────────
   server.tool(
     "install_test_dependencies",
-    `Install approved Jest-related test dependencies in the target project.
+    `Install approved test dependencies in the target project.
 
 Safety guards:
-- Only these package names are allowed: jest, @types/jest, ts-jest
+- Only these package names are allowed: jest, @types/jest, ts-jest, supertest, @types/supertest
 - Package manager is fixed to npm
 - Installs only as devDependencies
 
@@ -1446,15 +1488,41 @@ Use this when tests fail due to missing Jest tooling.`,
           return {
             content: [{
               type: "text",
-              text: "No packages requested. Allowed packages: jest, @types/jest, ts-jest.",
+              text: "No packages requested. Allowed packages: jest, @types/jest, ts-jest, supertest, @types/supertest.",
             }],
             isError: true,
           };
         }
 
-        await fs.access(path.join(projectRoot, "package.json"));
+        const packageJsonPath = path.join(projectRoot, "package.json");
+        await fs.access(packageJsonPath);
 
-        const args = ["install", "--save-dev", ...uniquePackages];
+        const pkgRaw = await fs.readFile(packageJsonPath, "utf-8");
+        const pkg = parseJsonOrJsonc(pkgRaw) as { devDependencies?: Record<string, string> } | null;
+        const existingDevDeps = pkg?.devDependencies ?? {};
+        const missingPackages = uniquePackages.filter((name) => !(name in existingDevDeps));
+
+        if (missingPackages.length === 0) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify(
+                {
+                  success: true,
+                  projectRoot,
+                  installed: [],
+                  alreadyPresent: uniquePackages,
+                  allowed: ALLOWED_TEST_PACKAGES,
+                  skipped: "All requested packages already exist in devDependencies.",
+                },
+                null,
+                2
+              ),
+            }],
+          };
+        }
+
+        const args = ["install", "--save-dev", ...missingPackages];
         const result = await new Promise<{
           exitCode: number;
           stdout: string;
@@ -1488,7 +1556,8 @@ Use this when tests fail due to missing Jest tooling.`,
               {
                 success: ok,
                 projectRoot,
-                installed: uniquePackages,
+                installed: missingPackages,
+                alreadyPresent: uniquePackages.filter((name) => name in existingDevDeps),
                 allowed: ALLOWED_TEST_PACKAGES,
                 command: `npm ${args.join(" ")}`,
                 exitCode: result.exitCode,

@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { analysisLogger } from "../logger.js";
+import { parseJsonOrJsonc } from "./jsonParsing.js";
 
 export interface JestConfig {
   found: boolean;
@@ -42,7 +43,7 @@ export interface ProjectStructure {
 async function safeReadJson(filePath: string): Promise<Record<string, unknown> | null> {
   try {
     const content = await fs.readFile(filePath, "utf-8");
-    return JSON.parse(content) as Record<string, unknown>;
+    return parseJsonOrJsonc(content);
   } catch {
     return null;
   }
@@ -221,6 +222,15 @@ export async function scanProjectStructure(rootDir: string): Promise<ProjectStru
     }
   }
 
+  // Treat TypeScript as present if tsconfig exists or TS source files are present,
+  // even when the project does not explicitly list "typescript" dependency.
+  if (
+    structure.tsConfig.found ||
+    structure.sourceFiles.some((f) => f.endsWith(".ts") || f.endsWith(".tsx"))
+  ) {
+    structure.packageJson.hasTypeScript = true;
+  }
+
   // ─── Recommendations ──────────────────────────────────────────────────────────
   if (!structure.packageJson.hasJest && !structure.packageJson.hasVitest) {
     structure.recommendations.push(
@@ -229,7 +239,7 @@ export async function scanProjectStructure(rootDir: string): Promise<ProjectStru
   }
   if (!structure.jest.found) {
     structure.recommendations.push(
-      "No jest.config.ts found. Create one to control testEnvironment, transform, and coverage."
+      "No Jest config file found (jest.config.ts/js/mjs/cjs or package.json jest key). Create one to control testEnvironment, transform, and coverage."
     );
   }
   if (!structure.tsConfig.strict && structure.packageJson.hasTypeScript) {

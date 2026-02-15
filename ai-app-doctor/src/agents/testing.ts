@@ -30,6 +30,9 @@ OPERATIONAL PROTOCOL:
 BOOTSTRAP RULES:
 - Before installing anything, inspect the target package.json scripts and try the existing test command first.
 - If a valid test script already exists, do not replace it.
+- If a Jest config file already exists (jest.config.js/ts/mjs/cjs), do not add a second Jest config source in package.json.
+- Do not overwrite existing Jest config unless test output proves it is invalid; prefer minimal edits.
+- Never delete metadata fields from package.json (keep version, description, author, etc. intact).
 - If test execution fails because scripts/tooling are missing (for example "Missing script: test" or Jest not installed), you MUST:
   1. Add a working test script to package.json.
   2. Add required test dependencies.
@@ -47,5 +50,9 @@ STRICT STANDARDS:
   generatePrompt: (_target, issue) =>
     `TASK: ${issue}
     - Project Root: .
-    - Skills Library: ./skills`,
+    - Skills Library: ./skills
+    - IMPORTANT:
+      - Prioritize unit tests over integration tests.
+      - Run tests with run_tests targeting unit paths when available (e.g. tests/unit).
+      - In TypeScript, import interfaces/types using 'import type' (never as runtime imports).`,
 };

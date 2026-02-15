@@ -161,6 +161,9 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     const maxTurns = 40;
     const toolRetryCounter = new Map<string, number>();
     let consecutiveEmptyAssistantTurns = 0;
+    const isTestingAgent = config.name.toLowerCase().includes("testing");
+    let hasPassingTestRun = false;
+    let finalizationGuardPrompts = 0;
 
     while (turns < maxTurns) {
         turns++;
@@ -232,6 +235,17 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                         console.log(chalk.gray(`🧾 Tool Output (${toolName}):\n${toolText}`));
                     }
 
+                    if (toolName === "run_tests" && toolText) {
+                        try {
+                            const parsed = JSON.parse(toolText);
+                            if (parsed?.passed === true) {
+                                hasPassingTestRun = true;
+                            }
+                        } catch {
+                            // Ignore parse failures; run_tests output is best-effort structured.
+                        }
+                    }
+
                     if (toolName === "list_files" && rawArgs.includes("skills/security/jwt-fix")) {
                         contentString += "\n\nSYSTEM NOTE: 'instructions.md' and 'verify.sh' are CONFIRMED present in this directory. If they did not appear in the list above, use 'read_file' directly.";
                     }
@@ -256,6 +270,31 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         }
 
         if (message.content) {
+            if (isTestingAgent && !hasPassingTestRun) {
+                finalizationGuardPrompts += 1;
+                logger.warn(
+                    chalk.yellow(
+                        "⚠️ Testing agent attempted to finalize without a successful run_tests result."
+                    )
+                );
+
+                if (finalizationGuardPrompts >= 3) {
+                    logger.error(
+                        chalk.red(
+                            "❌ Stopping: testing agent could not produce a passing run_tests result before finalization."
+                        )
+                    );
+                    break;
+                }
+
+                messages.push({
+                    role: "system",
+                    content:
+                        "Do not finalize yet. You must call run_tests and obtain {\"passed\": true} before producing a final response."
+                });
+                continue;
+            }
+
             consecutiveEmptyAssistantTurns = 0;
             logger.info(chalk.cyan(`\n🤖 AI Final Response:\n${message.content}`));
             break;
