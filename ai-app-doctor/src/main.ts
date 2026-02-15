@@ -5,6 +5,7 @@ import { setupLogger } from "./config/setupLogger.js";
 import { getLogger } from "@logtape/logtape";
 import { startOrchestrator } from "./orchestrator.js";
 import { SecurityAgent } from "./agents/security.js";
+import { TestingAgent } from "./agents/testing.js";
 import { configDotenv } from "dotenv";
 import { initializeDatabase } from "./utils/initDb.js";
 
@@ -35,6 +36,9 @@ async function main() {
 
     const agentMap: Record<string, any> = {
         security: SecurityAgent,
+        testing: TestingAgent,
+        unit: TestingAgent,
+        "unit-test": TestingAgent,
     };
 
     const selectedConfig = agentMap[agentArg.toLowerCase()];

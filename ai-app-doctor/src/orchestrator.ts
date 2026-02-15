@@ -67,7 +67,10 @@ function sanitizeAssistantMessageForHistory(message: any) {
 export async function startOrchestrator(config: AgentConfig, targetPath: string, userPrompt: string) {
     logger.info(chalk.blue.bold("🚀 Starting Orchestrator..."));
 
-    const serverPath = path.resolve(process.cwd(), "../mcp-security-server/build/index.js");
+    const serverPath = path.resolve(
+        process.cwd(),
+        config.mcpServerPath || "../mcp-security-server/build/index.js"
+    );
     const orchestratorRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
     const skillsPath = path.resolve(process.cwd(), "skills");
