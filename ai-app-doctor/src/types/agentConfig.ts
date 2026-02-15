@@ -4,6 +4,8 @@ export interface AgentConfig {
     systemPrompt: string;
     defaultUserPrompt: string;
     mcpServerPath?: string;
+    projectRootMode?: "cwd" | "target";
+    runtimeInstructionsOverride?: string;
     maxSteps?: number;
     generatePrompt?: (targetFile: string, issue: string) => string;
 }

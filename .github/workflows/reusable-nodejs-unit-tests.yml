@@ -1,0 +1,176 @@
+name: "Reusable Unit Test Implementator"
+
+on:
+  workflow_call:
+    inputs:
+      target_repository:
+        description: 'The full name of the repo to implement unit tests for'
+        required: true
+        type: string
+      target_subdirectory:
+        description: 'Optional subdirectory inside the target repository to scan/fix'
+        required: false
+        type: string
+      llm_url:
+        description: 'The URL of the LLM service'
+        required: true
+        type: string
+      llm_model_name:
+        description: 'The name of the LLM model to use'
+        required: true
+        type: string
+      ai_tools_ref:
+        description: 'Optional ref/branch for ai-tools checkout'
+        required: false
+        type: string
+      run_environment:
+        description: 'The environment to run the implementation in (e.g., dev, staging)'
+        required: false
+        type: string
+    secrets:
+      LM_API_KEY:
+        required: true
+      GH_TOKEN:
+        required: false
+
+jobs:
+  unit-test-implementation:
+    runs-on: ubuntu-latest
+    env:
+        TARGET_REPO_DIR: ${{ github.workspace }}/target-repo
+        TARGET_DIR: ${{ github.workspace }}/target-repo
+        TOOLS_DIR: ${{ github.workspace }}/ai-tools
+        LOCAL_SRC_DIR: ${{ github.workspace }}/local-src
+    steps:
+      - name: Checkout AI Tools
+        uses: actions/checkout@v4
+        with:
+          repository: PapaZouk/ai-devscops-lab
+          ref: ${{ inputs.ai_tools_ref }}
+          path: ai-tools
+
+      - name: Checkout Local Source (dev)
+        if: ${{ inputs.run_environment == 'dev' }}
+        uses: actions/checkout@v4
+        with:
+          path: local-src
+      
+      - name: Checkout Target Repository
+        if: ${{ inputs.run_environment != 'dev' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.target_repository }}
+          path: target-repo
+          token: ${{ secrets.GH_TOKEN || github.token }}
+
+      - name: Ensure AI tools layout for local act runs
+        run: |
+          # In local `act --bind` runs, checkout path materialization can differ.
+          # Keep expected ai-tools/* paths available without changing CI behavior.
+          if [ ! -d "$TOOLS_DIR/ai-app-doctor" ] && [ -d "$LOCAL_SRC_DIR/ai-app-doctor" ]; then
+            mkdir -p "$TOOLS_DIR"
+            ln -s "$LOCAL_SRC_DIR/ai-app-doctor" "$TOOLS_DIR/ai-app-doctor"
+          fi
+
+          if [ ! -d "$TOOLS_DIR/mcp-unit-test-server" ] && [ -d "$LOCAL_SRC_DIR/mcp-unit-test-server" ]; then
+            mkdir -p "$TOOLS_DIR"
+            ln -s "$LOCAL_SRC_DIR/mcp-unit-test-server" "$TOOLS_DIR/mcp-unit-test-server"
+          fi
+
+          # In local/dev runs, prefer local workspace tool code over checked-out remote copy.
+          if [ "${{ inputs.run_environment }}" = "dev" ] && [ -d "$LOCAL_SRC_DIR/ai-app-doctor" ]; then
+            rm -rf "$TOOLS_DIR/ai-app-doctor"
+            ln -s "$LOCAL_SRC_DIR/ai-app-doctor" "$TOOLS_DIR/ai-app-doctor"
+          fi
+
+          if [ "${{ inputs.run_environment }}" = "dev" ] && [ -d "$LOCAL_SRC_DIR/mcp-unit-test-server" ]; then
+            rm -rf "$TOOLS_DIR/mcp-unit-test-server"
+            ln -s "$LOCAL_SRC_DIR/mcp-unit-test-server" "$TOOLS_DIR/mcp-unit-test-server"
+          fi
+
+      - name: Resolve target directory
+        run: |
+          TARGET_REPO_DIR="${{ env.TARGET_REPO_DIR }}"
+          if [ "${{ inputs.run_environment }}" = "dev" ]; then
+            if [ -d "$TARGET_REPO_DIR" ] && [ -f "$TARGET_REPO_DIR/package.json" ]; then
+              TARGET_REPO_DIR="$TARGET_REPO_DIR"
+            elif [ -f "$LOCAL_SRC_DIR/package.json" ]; then
+              TARGET_REPO_DIR="$LOCAL_SRC_DIR"
+            elif [ -f "$TOOLS_DIR/package.json" ]; then
+              TARGET_REPO_DIR="$TOOLS_DIR"
+            else
+              echo "::error::No valid Node target found in dev mode (checked target-repo, local-src, ai-tools)."
+              exit 1
+            fi
+          fi
+
+          TARGET_DIR="$TARGET_REPO_DIR"
+          if [ -n "${{ inputs.target_subdirectory }}" ]; then
+            TARGET_DIR="$TARGET_REPO_DIR/${{ inputs.target_subdirectory }}"
+          fi
+
+          if [ ! -d "$TARGET_DIR" ]; then
+            echo "::error::Target directory not found: $TARGET_DIR"
+            exit 1
+          fi
+
+          echo "TARGET_DIR=$TARGET_DIR" >> "$GITHUB_ENV"
+          echo "REPORT_PATH=$TARGET_DIR/snyk_report.json" >> "$GITHUB_ENV"
+          echo "Using TARGET_DIR=$TARGET_DIR"
+
+      - name: Debug resolved paths
+        run: |
+          echo "run_environment=${{ inputs.run_environment }}"
+          echo "github.workspace=${{ github.workspace }}"
+          echo "TOOLS_DIR=$TOOLS_DIR"
+          echo "TARGET_REPO_DIR=${{ env.TARGET_REPO_DIR }}"
+          echo "TARGET_DIR=$TARGET_DIR"
+          echo "--- checks ---"
+          test -d "$TOOLS_DIR" && echo "OK dir: $TOOLS_DIR" || echo "MISSING dir: $TOOLS_DIR"
+          test -d "$TARGET_DIR" && echo "OK dir: $TARGET_DIR" || echo "MISSING dir: $TARGET_DIR"
+          test -f "$TARGET_DIR/package.json" && echo "OK file: $TARGET_DIR/package.json" || echo "MISSING file: $TARGET_DIR/package.json"
+          test -d "$TOOLS_DIR/ai-app-doctor" && echo "OK dir: $TOOLS_DIR/ai-app-doctor" || echo "MISSING dir: $TOOLS_DIR/ai-app-doctor"
+          test -d "$TOOLS_DIR/mcp-unit-test-server" && echo "OK dir: $TOOLS_DIR/mcp-unit-test-server" || echo "MISSING dir: $TOOLS_DIR/mcp-unit-test-server"
+          echo "--- listing target ---"
+          ls -la "$TARGET_DIR" || true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+          cache-dependency-path: 'ai-tools/ai-app-doctor/package-lock.json'
+
+      - name: Install Target Repository Dependencies
+        run: |
+          cd $TARGET_DIR
+          npm install
+
+      - name: Build AI Tools
+        run: |
+          cd $TOOLS_DIR/mcp-unit-test-server && npm install && npm run build
+          cd $TOOLS_DIR/ai-app-doctor && npm install
+          if [ "${{ inputs.run_environment }}" != "dev" ]; then
+            npm run build
+          fi
+
+      - name: Link Skills Into Target Repository
+        run: |
+          rm -rf $TARGET_DIR/skills
+          ln -s $TOOLS_DIR/mcp-unit-test-server/build $TARGET_DIR/skills
+
+      - name: Run Unit Test Implementation
+        run: |
+          cd $TOOLS_DIR/ai-app-doctor
+
+          npx tsx src/main.ts \
+            --agent=testing \
+            --target=$TARGET_DIR \
+            --input="Scan the codebase and implement unit tests for uncovered functions or modules, prioritizing critical and high-risk code. If test tooling is missing, add the required package.json test script and dependencies, run install to regenerate lockfiles, and run tests so the suite executes."
+        env:
+          LM_API_KEY: ${{ secrets.LM_API_KEY }}
+          LM_BASE_URL: ${{ inputs.llm_url }}
+          LM_MODEL_NAME: ${{ inputs.llm_model_name }}
+          SKIP_DELIVERY: ${{ (inputs.run_environment == 'dev') && 'true' || 'false' }}
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          DEBUG: "orchestrator:*"

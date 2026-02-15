@@ -13,6 +13,7 @@
  *   check_coverage_gaps     — Diff source vs existing tests to find missing coverage
  *   suggest_mock_strategy   — Return ready-to-use mock snippets for detected dependencies
  *   get_jest_config_template — Generate a tailored jest.config.ts
+ *   install_test_dependencies — Install only approved test dependencies
  *
  * Resources:
  *   testing-patterns://jest-best-practices
@@ -69,10 +70,10 @@ async function main(): Promise<void> {
   registerPrompts(server);
 
   rootLogger.info("MCP primitives registered", {
-    tools: 12,  // 0:get_project_root 1:analyze_file 2:scan_project 3:list_untested_files
+    tools: 13,  // 0:get_project_root 1:analyze_file 2:scan_project 3:list_untested_files
     // 4:generate_test_scaffold 5:read_file 6:write_test_file 7:check_coverage_gaps
     // 8:suggest_mock_strategy 9:get_jest_config_template
-    // 10:validate_test_setup 11:run_tests
+    // 10:validate_test_setup 11:run_tests 12:install_test_dependencies
     resources: 3,
     prompts: 3,
   });

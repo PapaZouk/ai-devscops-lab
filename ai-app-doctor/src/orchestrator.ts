@@ -97,7 +97,10 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         args: [serverPath],
         env: {
             ...process.env,
-            PROJECT_ROOT: path.resolve(process.cwd()),
+            PROJECT_ROOT:
+                config.projectRootMode === "target"
+                    ? path.resolve(targetPath)
+                    : path.resolve(process.cwd()),
             CWD: targetPath,
             SKILLS_PATH: skillsPath
         }
@@ -131,7 +134,8 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         logger.info(chalk.yellow("🧪 Local mode detected: PR delivery steps are disabled."));
     }
 
-    const runtimeInstructions = getRuntimeInstructions({ skipDelivery });
+    const runtimeInstructions =
+        config.runtimeInstructionsOverride ?? getRuntimeInstructions({ skipDelivery });
 
     const runtimeSystemPrompt = `
         ${config.systemPrompt}
@@ -156,6 +160,7 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     let turns = 0;
     const maxTurns = 40;
     const toolRetryCounter = new Map<string, number>();
+    let consecutiveEmptyAssistantTurns = 0;
 
     while (turns < maxTurns) {
         turns++;
@@ -169,11 +174,13 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         });
 
         const message = response.choices[0].message;
+        const finishReason = response.choices[0].finish_reason;
         messages.push(sanitizeAssistantMessageForHistory(message));
 
         logger.info(chalk.gray(`💬 Turn ${turns}: AI Message Received (role: ${message.role})`));
 
         if (message.tool_calls && message.tool_calls.length > 0) {
+            consecutiveEmptyAssistantTurns = 0;
             const toolOutputs: any[] = [];
             for (const call of message.tool_calls) {
                 if (call.type !== 'function') {
@@ -249,7 +256,24 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         }
 
         if (message.content) {
+            consecutiveEmptyAssistantTurns = 0;
             logger.info(chalk.cyan(`\n🤖 AI Final Response:\n${message.content}`));
+            break;
+        }
+
+        consecutiveEmptyAssistantTurns += 1;
+        logger.warn(
+            chalk.yellow(
+                `⚠️ Empty assistant turn ${consecutiveEmptyAssistantTurns} (finish_reason=${finishReason ?? "unknown"}).`
+            )
+        );
+
+        if (consecutiveEmptyAssistantTurns >= 3) {
+            logger.error(
+                chalk.red(
+                    "❌ Assistant returned no tool calls and no content for 3 consecutive turns. Stopping to avoid a silent loop."
+                )
+            );
             break;
         }
     }

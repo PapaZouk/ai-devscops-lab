@@ -46,6 +46,9 @@ function resolveProjectPath(userPath?: string | null): string {
   return path.resolve(root, userPath);
 }
 
+const ALLOWED_TEST_PACKAGES = ["jest", "@types/jest", "ts-jest"] as const;
+type AllowedTestPackage = (typeof ALLOWED_TEST_PACKAGES)[number];
+
 /** Register all tools on the MCP server */
 export function registerTools(server: McpServer): void {
 
@@ -1207,27 +1210,43 @@ a broken configuration.`,
         const scanPath    = resolveProjectPath(null);
         const projectRoot = getProjectRoot();
 
-        // ── Pre-flight: validate setup ──────────────────────────────────────
-        // Quick dependency check before wasting time spawning
+        // ── Runner selection ────────────────────────────────────────────────
+        // Prefer project-defined npm test script so repo-specific config
+        // (e.g. jest --config ...) is always respected.
         let jestBin = path.join(scanPath, "node_modules", ".bin", "jest");
-        let useNpm  = false;
+        let useNpm = false;
+        let hasTestScript = false;
 
         try {
-          await fs.access(jestBin);
+          const pkgRaw = await fs.readFile(path.join(scanPath, "package.json"), "utf-8");
+          const pkg = JSON.parse(pkgRaw) as { scripts?: Record<string, string> };
+          hasTestScript =
+            typeof pkg?.scripts?.test === "string" && pkg.scripts.test.trim().length > 0;
         } catch {
-          // Fall back to npm test
-          jestBin = "npm";
-          useNpm  = true;
+          hasTestScript = false;
         }
 
-        // Try vitest if jest not found
-        if (useNpm) {
-          const vitestBin = path.join(scanPath, "node_modules", ".bin", "vitest");
+        if (hasTestScript) {
+          jestBin = "npm";
+          useNpm = true;
+        } else {
           try {
-            await fs.access(vitestBin);
-            jestBin = vitestBin;
-            useNpm  = false;
-          } catch { /* not found either */ }
+            await fs.access(jestBin);
+          } catch {
+            // Fall back to npm test
+            jestBin = "npm";
+            useNpm = true;
+          }
+
+          // Try vitest if jest not found and no npm test script exists
+          if (useNpm) {
+            const vitestBin = path.join(scanPath, "node_modules", ".bin", "vitest");
+            try {
+              await fs.access(vitestBin);
+              jestBin = vitestBin;
+              useNpm = false;
+            } catch { /* not found either */ }
+          }
         }
 
         // ── Build CLI args ──────────────────────────────────────────────────
@@ -1373,6 +1392,116 @@ a broken configuration.`,
         toolLogger.error("run_tests failed: {error}", {
           error: err instanceof Error ? err.message : String(err),
         });
+        return {
+          content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 12. install_test_dependencies
+  // ───────────────────────────────────────────────────────────────────────────
+  server.tool(
+    "install_test_dependencies",
+    `Install approved Jest-related test dependencies in the target project.
+
+Safety guards:
+- Only these package names are allowed: jest, @types/jest, ts-jest
+- Package manager is fixed to npm
+- Installs only as devDependencies
+
+Use this when tests fail due to missing Jest tooling.`,
+    {
+      packages: z
+        .array(z.enum(ALLOWED_TEST_PACKAGES))
+        .optional()
+        .default([...ALLOWED_TEST_PACKAGES])
+        .describe("Subset of allowed packages to install. Defaults to all allowed packages."),
+    },
+    async ({ packages }) => {
+      toolLogger.info("install_test_dependencies called", { packages });
+      const { spawn } = await import("node:child_process");
+
+      try {
+        const projectRoot = resolveProjectPath(null);
+
+        // Extra runtime guard in case tool contracts are bypassed.
+        const uniquePackages = [...new Set(packages)] as AllowedTestPackage[];
+        const disallowed = uniquePackages.filter(
+          (pkg) => !(ALLOWED_TEST_PACKAGES as readonly string[]).includes(pkg)
+        );
+        if (disallowed.length > 0) {
+          return {
+            content: [{
+              type: "text",
+              text: `Refused install. Disallowed package(s): ${disallowed.join(", ")}`,
+            }],
+            isError: true,
+          };
+        }
+
+        if (uniquePackages.length === 0) {
+          return {
+            content: [{
+              type: "text",
+              text: "No packages requested. Allowed packages: jest, @types/jest, ts-jest.",
+            }],
+            isError: true,
+          };
+        }
+
+        await fs.access(path.join(projectRoot, "package.json"));
+
+        const args = ["install", "--save-dev", ...uniquePackages];
+        const result = await new Promise<{
+          exitCode: number;
+          stdout: string;
+          stderr: string;
+        }>((resolve) => {
+          const out: Buffer[] = [];
+          const err: Buffer[] = [];
+
+          const child = spawn("npm", args, {
+            cwd: projectRoot,
+            env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
+            shell: false,
+          });
+
+          child.stdout?.on("data", (chunk: Buffer) => out.push(chunk));
+          child.stderr?.on("data", (chunk: Buffer) => err.push(chunk));
+          child.on("close", (code) => {
+            resolve({
+              exitCode: code ?? 1,
+              stdout: Buffer.concat(out).toString("utf-8"),
+              stderr: Buffer.concat(err).toString("utf-8"),
+            });
+          });
+        });
+
+        const ok = result.exitCode === 0;
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: ok,
+                projectRoot,
+                installed: uniquePackages,
+                allowed: ALLOWED_TEST_PACKAGES,
+                command: `npm ${args.join(" ")}`,
+                exitCode: result.exitCode,
+                stdout: result.stdout.slice(0, 8000),
+                stderr: result.stderr.slice(0, 4000),
+              },
+              null,
+              2
+            ),
+          }],
+          isError: !ok,
+        };
+      } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
           isError: true,
