@@ -7,6 +7,7 @@ jobs:
         with:
             target_repository: ${{ github.repository }}
             target_subdirectory: "patients/vulnerable-api-app"
+            target_test_file: ""
             llm_url: "http://host.docker.internal:1234/v1" 
             llm_model_name: "openai/gpt-oss-20b"
             ai_tools_ref: "feature-add-unit-tests-workflow"

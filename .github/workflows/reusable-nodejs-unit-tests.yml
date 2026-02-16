@@ -11,6 +11,10 @@ on:
         description: 'Optional subdirectory inside the target repository to scan/fix'
         required: false
         type: string
+      target_test_file:
+        description: 'Optional file path (relative to target root/subdirectory) to scope unit test generation to a single file'
+        required: false
+        type: string
       llm_url:
         description: 'The URL of the LLM service'
         required: true
@@ -116,6 +120,17 @@ jobs:
             exit 1
           fi
 
+          if [ -n "${{ inputs.target_test_file }}" ]; then
+            TARGET_TEST_FILE_PATH="$TARGET_DIR/${{ inputs.target_test_file }}"
+            if [ ! -f "$TARGET_TEST_FILE_PATH" ]; then
+              echo "::error::target_test_file not found: $TARGET_TEST_FILE_PATH"
+              exit 1
+            fi
+            echo "TARGET_TEST_FILE=${{ inputs.target_test_file }}" >> "$GITHUB_ENV"
+            echo "TARGET_TEST_FILE_PATH=$TARGET_TEST_FILE_PATH" >> "$GITHUB_ENV"
+            echo "Using TARGET_TEST_FILE_PATH=$TARGET_TEST_FILE_PATH"
+          fi
+
           echo "TARGET_DIR=$TARGET_DIR" >> "$GITHUB_ENV"
           echo "REPORT_PATH=$TARGET_DIR/snyk_report.json" >> "$GITHUB_ENV"
           echo "Using TARGET_DIR=$TARGET_DIR"
@@ -178,10 +193,15 @@ jobs:
         run: |
           cd $TOOLS_DIR/ai-app-doctor
 
+          PROMPT="Scan the codebase and implement unit tests for uncovered functions or modules, prioritizing critical and high-risk code. If test tooling is missing, add the required package.json test script and dependencies, run install to regenerate lockfiles, and run tests so the suite executes."
+          if [ -n "${{ inputs.target_test_file }}" ]; then
+            PROMPT="Implement unit tests only for file ${{ inputs.target_test_file }}. Do not create tests for other files. Keep existing project test structure (for example tests/ next to src/ when present). Use the existing package.json test script if already defined. If test tooling is missing, add only what is required and run tests for the relevant scope."
+          fi
+
           npx tsx src/main.ts \
             --agent=testing \
             --target=$TARGET_DIR \
-            --input="Scan the codebase and implement unit tests for uncovered functions or modules, prioritizing critical and high-risk code. If test tooling is missing, add the required package.json test script and dependencies, run install to regenerate lockfiles, and run tests so the suite executes."
+            --input="$PROMPT"
         env:
           LM_API_KEY: ${{ secrets.LM_API_KEY }}
           LM_BASE_URL: ${{ inputs.llm_url }}
