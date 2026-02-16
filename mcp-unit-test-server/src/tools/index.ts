@@ -55,6 +55,7 @@ const ALLOWED_TEST_PACKAGES = [
   "@types/supertest",
 ] as const;
 type AllowedTestPackage = (typeof ALLOWED_TEST_PACKAGES)[number];
+const ALLOWED_DELIVERY_COMMANDS = ["git", "gh"] as const;
 
 function inferTestConvention(
   sourcePath: string,
@@ -1459,7 +1460,49 @@ a broken configuration.`,
           )
           .slice(0, 20); // cap to avoid huge output
 
-        const passed = result.exitCode === 0 && !result.timedOut;
+        let passed = result.exitCode === 0 && !result.timedOut;
+        let qualityIssues: Array<{ file: string; issues: string[] }> = [];
+
+        // Quality gate for targeted test-file runs:
+        // prevent passing scaffold placeholders as "successful" output.
+        if (passed && effectiveTestPathPattern) {
+          const candidate = path.isAbsolute(effectiveTestPathPattern)
+            ? effectiveTestPathPattern
+            : path.join(projectRoot, effectiveTestPathPattern);
+          const looksLikeTestFile = /\.(test|spec)\.[jt]sx?$/.test(candidate);
+          if (looksLikeTestFile) {
+            const stat = await fs.stat(candidate).catch(() => null);
+            if (stat?.isFile()) {
+              const content = await fs.readFile(candidate, "utf-8");
+              const issues: string[] = [];
+              if (/TODO:/i.test(content)) issues.push("contains TODO placeholders");
+              if (/replace with precise assertion/i.test(content)) {
+                issues.push("contains scaffold assertion placeholder text");
+              }
+              if (/supply constructor args if needed/i.test(content)) {
+                issues.push("contains scaffold constructor placeholder text");
+              }
+              const hasTypeOnlyImport = /^\s*import\s+type\s+/m.test(content);
+              const hasRuntimeTargetImport =
+                /^\s*import\s+(?!type)(?!\{\s*jest\s*\}\s*from\s+["']@jest\/globals["']).+from\s+["'](?:\.\.\/|\.\/).+["']/m
+                  .test(content);
+              if (hasTypeOnlyImport && !hasRuntimeTargetImport) {
+                issues.push("tests only types/interfaces with no runtime subject under test");
+              }
+              if (
+                /describe\((["'`]).*interface.*\1/i.test(content) &&
+                /toHaveProperty\(/i.test(content)
+              ) {
+                issues.push("contains interface-shape assertions instead of runtime behavior tests");
+              }
+
+              if (issues.length > 0) {
+                qualityIssues = [{ file: path.relative(projectRoot, candidate), issues }];
+                passed = false;
+              }
+            }
+          }
+        }
 
         return {
           content: [{
@@ -1474,6 +1517,7 @@ a broken configuration.`,
                 duration: timeMatch?.[1]?.trim()   ?? "unknown",
               },
               fileResults,
+              qualityIssues,
               coverageSummary: coverage ? coverageLines : [],
               // Full output — the agent can read it to diagnose specific failures
               stdout: result.stdout.slice(0, 8000),  // cap at 8 KB
@@ -1481,6 +1525,8 @@ a broken configuration.`,
               effectiveTestPathPattern: effectiveTestPathPattern ?? null,
               hint: passed
                 ? "All tests passed."
+                : qualityIssues.length > 0
+                  ? "Quality gate failed: generated tests still contain scaffold placeholders. Replace placeholders with meaningful assertions and rerun run_tests."
                 : result.timedOut
                   ? `Tests timed out after ${timeout_seconds}s. Try a smaller test_path_pattern or increase timeout_seconds.`
                   : "Tests failed. Read stdout/stderr for details, then use check_coverage_gaps or read_file to inspect failing tests.",
@@ -1626,6 +1672,192 @@ Use this when tests fail due to missing Jest tooling.`,
             ),
           }],
           isError: !ok,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 13. run_command
+  // ───────────────────────────────────────────────────────────────────────────
+  server.tool(
+    "run_command",
+    `Run a delivery command for git/gh or execute a script path inside skills/.
+
+Safety guards:
+- command mode allows only: git, gh
+- path mode allows only scripts under PROJECT_ROOT/skills/
+- cwd is resolved relative to PROJECT_ROOT`,
+    {
+      command: z
+        .string()
+        .optional()
+        .describe('Executable name only (allowed: "git", "gh"). Do not include flags/arguments here.'),
+      path: z
+        .string()
+        .optional()
+        .describe('Script path relative to PROJECT_ROOT, e.g. "./skills/git/delivery/verify.sh".'),
+      args: z.array(z.string()).optional().default([]),
+      cwd: z.string().optional().describe("Optional working directory relative to PROJECT_ROOT."),
+      timeout_seconds: z.number().int().min(1).max(300).optional().default(120),
+    },
+    async ({ command, path: scriptPath, args, cwd, timeout_seconds }) => {
+      toolLogger.info("run_command called", { command, scriptPath, cwd });
+      const { spawn } = await import("node:child_process");
+
+      try {
+        const projectRoot = resolveProjectPath(null);
+        const commandMode = typeof command === "string" && command.length > 0;
+        const pathMode = typeof scriptPath === "string" && scriptPath.length > 0;
+
+        if ((commandMode && pathMode) || (!commandMode && !pathMode)) {
+          return {
+            content: [{
+              type: "text",
+              text: 'Provide exactly one of "command" or "path".',
+            }],
+            isError: true,
+          };
+        }
+
+        const resolvedCwd = cwd ? resolveProjectPath(cwd) : projectRoot;
+        const cwdStat = await fs.stat(resolvedCwd).catch(() => null);
+        if (!cwdStat || !cwdStat.isDirectory()) {
+          return {
+            content: [{
+              type: "text",
+              text: `Invalid cwd: ${resolvedCwd}`,
+            }],
+            isError: true,
+          };
+        }
+
+        let bin = "";
+        let cmdArgs: string[] = [];
+
+        if (commandMode) {
+          const normalizedCommand = command!.trim();
+          const normalizedArgs = [...args];
+
+          if (/\s/.test(normalizedCommand)) {
+            return {
+              content: [{
+                type: "text",
+                text:
+                  `Invalid command "${command}". ` +
+                  `Set command to only "git" or "gh", and pass all flags/values in args[]. ` +
+                  `Example: command="gh", args=["pr","create","--title","My Title","--body","My Body"]`,
+              }],
+              isError: true,
+            };
+          }
+
+          if (!(ALLOWED_DELIVERY_COMMANDS as readonly string[]).includes(normalizedCommand)) {
+            return {
+              content: [{
+                type: "text",
+                text: `Refused command "${command}". Allowed commands: ${ALLOWED_DELIVERY_COMMANDS.join(", ")}`,
+              }],
+              isError: true,
+            };
+          }
+          bin = normalizedCommand;
+          cmdArgs = normalizedArgs;
+        } else {
+          const rawScript = scriptPath!;
+          const resolvedScriptFromProject = path.isAbsolute(rawScript)
+            ? path.resolve(rawScript)
+            : path.resolve(projectRoot, rawScript);
+          const resolvedScriptFromAgent = path.isAbsolute(rawScript)
+            ? path.resolve(rawScript)
+            : path.resolve(process.cwd(), rawScript);
+          let resolvedScript = resolvedScriptFromProject;
+
+          try {
+            await fs.access(resolvedScriptFromProject);
+            resolvedScript = resolvedScriptFromProject;
+          } catch {
+            resolvedScript = resolvedScriptFromAgent;
+          }
+
+          const normalizedRoot = projectRoot.replace(/\\/g, "/");
+          const normalizedAgentRoot = path.resolve(process.cwd()).replace(/\\/g, "/");
+          const normalizedScript = resolvedScript.replace(/\\/g, "/");
+          const inProjectSkills = normalizedScript.startsWith(`${normalizedRoot}/skills/`);
+          const inAgentSkills = normalizedScript.startsWith(`${normalizedAgentRoot}/skills/`);
+          if (!inProjectSkills && !inAgentSkills) {
+            return {
+              content: [{
+                type: "text",
+                text: `Refused script outside skills/: ${resolvedScript}`,
+              }],
+              isError: true,
+            };
+          }
+          await fs.access(resolvedScript);
+          bin = "bash";
+          cmdArgs = [resolvedScript, ...args];
+        }
+
+        const timeoutMs = (timeout_seconds ?? 120) * 1000;
+        const result = await new Promise<{
+          exitCode: number;
+          stdout: string;
+          stderr: string;
+          timedOut: boolean;
+        }>((resolve) => {
+          const out: Buffer[] = [];
+          const err: Buffer[] = [];
+          let timedOut = false;
+
+          const child = spawn(bin, cmdArgs, {
+            cwd: resolvedCwd,
+            env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
+            shell: false,
+          });
+
+          const timer = setTimeout(() => {
+            timedOut = true;
+            child.kill("SIGTERM");
+          }, timeoutMs);
+
+          child.stdout?.on("data", (chunk: Buffer) => out.push(chunk));
+          child.stderr?.on("data", (chunk: Buffer) => err.push(chunk));
+          child.on("close", (code) => {
+            clearTimeout(timer);
+            resolve({
+              exitCode: code ?? 1,
+              stdout: Buffer.concat(out).toString("utf-8"),
+              stderr: Buffer.concat(err).toString("utf-8"),
+              timedOut,
+            });
+          });
+        });
+
+        const success = result.exitCode === 0 && !result.timedOut;
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(
+              {
+                success,
+                command: [bin, ...cmdArgs].join(" "),
+                cwd: resolvedCwd,
+                exitCode: result.exitCode,
+                timedOut: result.timedOut,
+                stdout: result.stdout.slice(0, 12000),
+                stderr: result.stderr.slice(0, 6000),
+              },
+              null,
+              2
+            ),
+          }],
+          isError: !success,
         };
       } catch (err) {
         return {

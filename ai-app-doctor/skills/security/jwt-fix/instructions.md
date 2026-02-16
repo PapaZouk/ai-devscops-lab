@@ -24,7 +24,7 @@ Applications must never start with an insecure state.
 - Before finishing, you MUST consult 'skills/git/delivery/instructions.md'.
 - Always use `git_diff` to double-check your "treatment" (patch).
 - When creating a PR, you MUST use the `--fill` or `--title/--body` flags to avoid interactive prompts which will hang the tool.
-- Example: `run_command(command="gh pr create --title '...' --body '...'")`
+- Example: `run_command(command="gh", args=["pr","create","--title","...","--body","..."])`
 
 ## Definition of Done
 - The "Fail-Fast" logic is implemented (no fallbacks).

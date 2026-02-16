@@ -289,7 +289,19 @@ export function generateTestScaffold(
     ``,
   ].join("\n");
 
-  return [header, importSection, mockSection, setupSection, ...testBlocks].join("\n");
+  const body = [importSection, mockSection, setupSection, ...testBlocks].join("\n");
+  const needsJestGlobalsImport =
+    opts.testFramework === "jest" &&
+    opts.moduleStyle === "esm" &&
+    /\bjest\./.test(body) &&
+    !/from ["']@jest\/globals["']/.test(body);
+
+  const importPrelude = [importSection];
+  if (needsJestGlobalsImport) {
+    importPrelude.push(`import { jest } from "@jest/globals";`);
+  }
+
+  return [header, ...importPrelude, mockSection, setupSection, ...testBlocks].join("\n");
 }
 
 /** Derive the canonical test file path from a source file path */

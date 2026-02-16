@@ -10,11 +10,10 @@ export const TestingAgent: AgentConfig = {
   projectRootMode: "target",
   runtimeInstructionsOverride: `## TESTING MODE OPERATIONS
 - Use only tools exposed by the unit-test MCP server.
-- Important tool names: scan_project, list_untested_files, analyze_file, read_file, write_test_file, run_tests, install_test_dependencies.
+- Important tool names: scan_project, list_untested_files, analyze_file, read_file, write_test_file, run_tests, install_test_dependencies, run_command.
 - For file operations, use keys exactly as required by schema:
   - read_file -> { "file_path": "..." }
   - write_test_file -> { "file_path": "...", "content": "...", "overwrite": true|false }
-- Do not call security-delivery tools or git/gh tooling in testing mode.
 - Before installing dependencies, inspect existing package.json scripts and use existing test command when present.
 - First action requirement: read "skills/testing/unit/instructions.md" and follow it for test placement and run_tests path selection.
 - Never call run_tests with empty arguments; always pass { "test_path_pattern": "..." }.`,
@@ -27,7 +26,23 @@ OPERATIONAL PROTOCOL:
 1. DISCOVER: Read "skills/testing/unit/instructions.md", then identify high-risk and untested modules.
 2. IMPLEMENT: Add focused unit tests with clear assertions.
 3. VERIFY: Run tests and iterate until green.
+   - Green means tests pass AND no scaffold placeholders remain in generated tests.
 4. BOOTSTRAP IF NEEDED: If test tooling is missing, set it up and continue.
+5. DELIVERY: After you get a successful run_tests result, use the git delivery skill to create a branch, push changes, and open a pull request.
+
+DELIVERY PROTOCOL (MANDATORY AFTER TEST PASS):
+- Run pre-flight once: run_command with path "./skills/git/delivery/verify.sh".
+- Read and follow "skills/git/delivery/instructions.md".
+- Use run_command(command,args) for git/gh commands:
+  1. git checkout -b doctor/<short-description>
+  2. git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+  3. git config user.name github-actions[bot]
+  4. git add <changed files>
+  5. git commit -m <message>
+  6. git push -u origin HEAD
+  7. run_command(command: "gh", args: ["pr","create","--title","<title>","--body","<body>"])
+- IMPORTANT: command must be only "git" or "gh". Never pass full shell strings in command.
+- If delivery pre-flight fails because GitHub auth/token is unavailable, report the failure clearly and do not claim PR was created.
 
 BOOTSTRAP RULES:
 - Before installing anything, inspect the target package.json scripts and try the existing test command first.

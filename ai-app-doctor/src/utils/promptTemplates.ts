@@ -5,6 +5,7 @@ const COMMON_RUNTIME_INSTRUCTIONS = `
    *Example: key="target_file", value="src/auth.js"*. If you don't have both, skip storing.
 3. **Verification Execution**: Always follow the skill's "Execution Protocol".
    Use 'run_command(path, args)' for script files and 'run_command(command, args)' for executables like git/gh.
+   In command mode, 'command' must be exactly "git" or "gh"; put all flags and values in 'args'.
    Do NOT use run-with-memory unless the skill explicitly instructs it.
 
 ## 🛠 WORKFLOW RIGOR

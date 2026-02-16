@@ -26,8 +26,11 @@ Create reliable unit tests that run successfully in CI without changing unrelate
 - Use `analyze_file` before writing tests.
 - Use `generate_test_scaffold` only as a baseline, then replace placeholders with real assertions.
 - Every written suite must include at least one real `it(...)` test case.
+- Never keep scaffold placeholders in final tests (`TODO:`, `replace with precise assertion`, `supply constructor args if needed`).
+- Do not write interface/type-shape tests (for example `import type ...` + `toHaveProperty` on object literals). Those are not runtime unit tests.
 - In ESM Jest projects, import globals when needed:
   - `import { jest } from "@jest/globals";`
+- If the target file contains no meaningful runtime behavior to unit-test (for example, only types/interfaces or empty declarations), do not open a PR with placeholder tests. Report explicitly that no meaningful unit test could be added.
 
 4. Run tests with explicit path patterns:
 - Never call `run_tests` with empty arguments in testing mode.
@@ -44,6 +47,12 @@ Create reliable unit tests that run successfully in CI without changing unrelate
 - If config mismatch causes "No tests found", update only the minimal `testMatch` needed.
 - Do not replace working scripts/config wholesale.
 
+6. Delivery after success:
+- After `run_tests` passes, execute the git delivery workflow:
+  - Run `./skills/git/delivery/verify.sh` via `run_command(path, args)`.
+  - Read `skills/git/delivery/instructions.md`.
+  - Create branch, commit, push, and open PR via `run_command(command, args)` with `git`/`gh`.
+
 ## File/Path Rules
 - Use relative paths only.
 - Keep tests close to source unless repository already centralizes tests.
@@ -53,3 +62,4 @@ Create reliable unit tests that run successfully in CI without changing unrelate
 - Each new test should assert behavior, not only existence.
 - Cover success path and at least one edge or error path for non-trivial logic.
 - Avoid fragile time/random/network dependencies unless mocked.
+- Placeholder-only tests are not acceptable for delivery.
