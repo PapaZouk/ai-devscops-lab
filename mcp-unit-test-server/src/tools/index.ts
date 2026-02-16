@@ -75,6 +75,139 @@ function inferTestConvention(
   return "__tests__";
 }
 
+function normalizeWithoutExt(p: string): string {
+  return p.replace(/\\/g, "/").replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, "");
+}
+
+async function existsAsModuleCandidate(absPathWithoutGuarantee: string): Promise<boolean> {
+  const candidates = [
+    absPathWithoutGuarantee,
+    `${absPathWithoutGuarantee}.ts`,
+    `${absPathWithoutGuarantee}.tsx`,
+    `${absPathWithoutGuarantee}.js`,
+    `${absPathWithoutGuarantee}.jsx`,
+    `${absPathWithoutGuarantee}.mjs`,
+    `${absPathWithoutGuarantee}.cjs`,
+    path.join(absPathWithoutGuarantee, "index.ts"),
+    path.join(absPathWithoutGuarantee, "index.tsx"),
+    path.join(absPathWithoutGuarantee, "index.js"),
+    path.join(absPathWithoutGuarantee, "index.jsx"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      await fs.access(candidate);
+      return true;
+    } catch { /* try next candidate */ }
+  }
+  return false;
+}
+
+function deriveRunTestsFailureDiagnostics(opts: {
+  timedOut: boolean;
+  qualityIssues: Array<{ file: string; issues: string[] }>;
+  stderr: string;
+  combinedOutput: string;
+}): Record<string, unknown> | null {
+  const { timedOut, qualityIssues, stderr, combinedOutput } = opts;
+
+  if (timedOut) {
+    return {
+      failureType: "timeout",
+      recommendation: "Increase timeout_seconds or narrow test_path_pattern to a smaller scope.",
+    };
+  }
+
+  if (qualityIssues.length > 0) {
+    return {
+      failureType: "quality_gate",
+      qualityIssues,
+      recommendation: "Replace scaffold placeholders and add behavior assertions before rerunning tests.",
+    };
+  }
+
+  if (!stderr.trim()) return null;
+
+  const failingCase = stderr.match(/●\s+([^\n]+)/)?.[1]?.trim() ?? null;
+  const failingLocationMatch = stderr.match(/\(([^()]+):(\d+):(\d+)\)/);
+  const failingLocation = failingLocationMatch
+    ? {
+      file: failingLocationMatch[1],
+      line: Number(failingLocationMatch[2]),
+      column: Number(failingLocationMatch[3]),
+    }
+    : null;
+
+  const moduleResolution = stderr.match(/Could not locate module\s+(.+?)\s+mapped as:\s*([^\n]+)/i);
+  if (moduleResolution) {
+    return {
+      failureType: "module_resolution",
+      failingCase,
+      failingLocation,
+      modulePath: moduleResolution[1]?.trim() ?? null,
+      mappedAs: moduleResolution[2]?.trim() ?? null,
+      recommendation:
+        "Fix relative import/mock paths from the test file location. In tests/**, source modules are often under ../../src/**.",
+    };
+  }
+
+  const namedExport = stderr.match(/does not provide an export named ['"]([^'"]+)['"]/i);
+  if (namedExport) {
+    return {
+      failureType: "esm_named_export",
+      failingCase,
+      failingLocation,
+      missingExport: namedExport[1],
+      recommendation:
+        "If importing a TypeScript interface/type, use import type and keep runtime imports separate.",
+    };
+  }
+
+  if (/expect\(received\)\.tohavelength\(expected\)/i.test(stderr)) {
+    return {
+      failureType: "assertion_length",
+      failingCase,
+      failingLocation,
+      recommendation:
+        "Reset shared mutable state in beforeEach and align expected collection sizes with real seeded state.",
+    };
+  }
+
+  if (/expect\(received\)\.toequal\(expected\)/i.test(stderr)) {
+    return {
+      failureType: "assertion_equality",
+      failingCase,
+      failingLocation,
+      recommendation:
+        "Update expected values to match runtime behavior from source code; avoid hardcoded IDs/counts when state mutates.",
+    };
+  }
+
+  if (/test suite failed to run/i.test(stderr)) {
+    return {
+      failureType: "suite_runtime_error",
+      failingCase,
+      failingLocation,
+      recommendation: "Fix import/initialization errors before asserting test behavior.",
+    };
+  }
+
+  if (/FAIL\s+[\w/.\-_]+\.(?:test|spec)\.[jt]sx?/m.test(combinedOutput)) {
+    return {
+      failureType: "test_failures",
+      failingCase,
+      failingLocation,
+      recommendation: "Inspect stderr assertions and patch tests incrementally based on the first failing case.",
+    };
+  }
+
+  return {
+    failureType: "unknown",
+    failingCase,
+    failingLocation,
+    recommendation: "Inspect stdout/stderr and adjust test logic or setup accordingly.",
+  };
+}
+
 /** Register all tools on the MCP server */
 export function registerTools(server: McpServer): void {
   server.tool(
@@ -456,6 +589,38 @@ Requires overwrite: true if the file already exists.`,
           };
         }
 
+        const preflightErrors: string[] = [];
+        if (/TODO:/i.test(content)) preflightErrors.push("Content contains TODO placeholders.");
+        if (/replace with precise assertion/i.test(content)) {
+          preflightErrors.push("Content still has scaffold assertion placeholder text.");
+        }
+        if (/supply constructor args if needed/i.test(content)) {
+          preflightErrors.push("Content still has scaffold constructor placeholder text.");
+        }
+
+        const moduleSpecs = new Set<string>();
+        for (const m of content.matchAll(/from\s+["']([^"']+)["']/g)) moduleSpecs.add(m[1]);
+        for (const m of content.matchAll(/jest\.mock\(\s*["']([^"']+)["']/g)) moduleSpecs.add(m[1]);
+
+        for (const spec of moduleSpecs) {
+          if (!spec.startsWith(".")) continue;
+          const resolvedFromTest = path.resolve(path.dirname(resolved), spec);
+          const exists = await existsAsModuleCandidate(resolvedFromTest);
+          if (!exists && relPath.startsWith("tests/")) {
+            const stripped = spec.replace(/^(\.\/|\.\.\/)+/, "");
+            if (stripped && !stripped.startsWith("src/")) {
+              const srcFallback = path.join(getProjectRoot(), "src", stripped);
+              const srcFallbackExists = await existsAsModuleCandidate(srcFallback);
+              if (srcFallbackExists) {
+                preflightErrors.push(
+                  `Relative module path "${spec}" does not resolve from "${relPath}". ` +
+                  `Did you mean a path under src (for example "../../src/${stripped}")?`
+                );
+              }
+            }
+          }
+        }
+
         const targetTestFile = (process.env.TARGET_TEST_FILE || "").trim();
         if (targetTestFile) {
           const sourceBase = path.basename(targetTestFile).replace(/\.(ts|tsx|js|jsx)$/, "");
@@ -471,6 +636,50 @@ Requires overwrite: true if the file already exists.`,
               isError: true,
             };
           }
+
+          const sourceAbs = resolveProjectPath(targetTestFile);
+          const sourceRaw = await fs.readFile(sourceAbs, "utf-8").catch(() => "");
+          if (sourceRaw) {
+            const typeNames = new Set<string>();
+            for (const m of sourceRaw.matchAll(/export\s+interface\s+(\w+)/g)) typeNames.add(m[1]);
+            for (const m of sourceRaw.matchAll(/export\s+type\s+(\w+)/g)) typeNames.add(m[1]);
+
+            if (typeNames.size > 0) {
+              const importRegex = /import\s+\{([^}]+)\}\s+from\s+["']([^"']+)["']/g;
+              for (const m of content.matchAll(importRegex)) {
+                const imported = m[1]
+                  .split(",")
+                  .map((s) => s.trim().split(/\s+as\s+/i)[0]?.trim())
+                  .filter(Boolean);
+                const spec = m[2];
+                if (!spec.startsWith(".")) continue;
+                const importAbs = path.resolve(path.dirname(resolved), spec);
+                if (normalizeWithoutExt(importAbs) === normalizeWithoutExt(sourceAbs)) {
+                  const runtimeTypeImports = imported.filter((name) => typeNames.has(name));
+                  if (runtimeTypeImports.length > 0) {
+                    preflightErrors.push(
+                      `Runtime import includes TypeScript-only symbols from target module: ${runtimeTypeImports.join(", ")}. ` +
+                      `Use "import type { ... }" for interfaces/types.`
+                    );
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if (preflightErrors.length > 0) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                error: "TEST_PRECHECK_FAILED",
+                filePath: relPath,
+                preflightErrors,
+              }, null, 2),
+            }],
+            isError: true,
+          };
         }
 
         try {
@@ -1052,6 +1261,15 @@ Returns:
           }
         }
 
+        const failureDiagnostics = passed
+          ? null
+          : deriveRunTestsFailureDiagnostics({
+            timedOut: result.timedOut,
+            qualityIssues,
+            stderr: result.stderr,
+            combinedOutput,
+          });
+
         return {
           content: [{
             type: "text",
@@ -1066,6 +1284,7 @@ Returns:
               },
               fileResults,
               qualityIssues,
+              failureDiagnostics,
               coverageSummary: coverage ? coverageLines : [],
               // Full output — the agent can read it to diagnose specific failures
               stdout: result.stdout.slice(0, 8000),  // cap at 8 KB

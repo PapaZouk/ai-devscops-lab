@@ -23,6 +23,16 @@ on:
         description: 'The name of the LLM model to use'
         required: true
         type: string
+      llm_fallback_model_name:
+        description: 'Optional fallback LLM model name used after repeated classified test failures'
+        required: false
+        type: string
+        default: ''
+      llm_escalate_after_failures:
+        description: 'Number of repeated run_tests failures before escalating to fallback model'
+        required: false
+        type: number
+        default: 3
       ai_tools_ref:
         description: 'Optional ref/branch for ai-tools checkout'
         required: false
@@ -206,6 +216,8 @@ jobs:
           LM_API_KEY: ${{ secrets.LM_API_KEY }}
           LM_BASE_URL: ${{ inputs.llm_url }}
           LM_MODEL_NAME: ${{ inputs.llm_model_name }}
+          LM_FALLBACK_MODEL_NAME: ${{ inputs.llm_fallback_model_name }}
+          LM_ESCALATE_AFTER_FAILURES: ${{ inputs.llm_escalate_after_failures }}
           SKIP_DELIVERY: ${{ (inputs.run_environment == 'dev') && 'true' || 'false' }}
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
           DEBUG: "orchestrator:*"

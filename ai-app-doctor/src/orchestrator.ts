@@ -104,6 +104,27 @@ function deriveRunTestsFailureHint(stderr: string): string | null {
     return null;
 }
 
+function deriveRunTestsFailureFingerprint(stderr: string): string {
+    const s = (stderr || "").toLowerCase();
+    if (!s.trim()) return "unknown";
+
+    const knownPatterns = [
+        "could not locate module",
+        "does not provide an export named",
+        "expect(received).toequal(expected)",
+        "expect(received).tohavelength(expected)",
+        "testsuite failed to run",
+    ];
+    for (const pattern of knownPatterns) {
+        if (s.includes(pattern)) return pattern;
+    }
+
+    const match = s.match(/●\s+([^\n]+)/);
+    if (match?.[1]) return `jest:${match[1].trim()}`;
+
+    return s.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 2).join(" | ") || "unknown";
+}
+
 
 export async function startOrchestrator(config: AgentConfig, targetPath: string, userPrompt: string) {
     logger.info(chalk.blue.bold("🚀 Starting Orchestrator..."));
@@ -162,7 +183,14 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
 
     const url = process.env.LM_BASE_URL || "http://localhost:1234/v1";
     const apiKey = process.env.LM_API_KEY || "lm-studio";
-    logger.info(chalk.blue(`Using LLM at ${url} with model ${config.model}`));
+    const fallbackModelFromEnv = (process.env.LM_FALLBACK_MODEL_NAME || "").trim();
+    const fallbackModel =
+        fallbackModelFromEnv ||
+        (config.model === "gpt-4o-mini" ? "gpt-4.1" : "");
+    const escalateAfterFailures = Number(process.env.LM_ESCALATE_AFTER_FAILURES || "3");
+    let currentModel = config.model;
+    let modelEscalated = false;
+    logger.info(chalk.blue(`Using LLM at ${url} with model ${currentModel}`));
 
     const openai = new OpenAI({
         baseURL: url,
@@ -211,12 +239,26 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     let finalizationGuardPrompts = 0;
     let allowFailureSummaryFinalization = false;
     let lastRunTestsSummary: string | null = null;
+    let lastRunTestsFailureFingerprint: string | null = null;
+    let repeatedRunTestsFailureCount = 0;
+    let requireFailureDiagnosisRead = false;
+    let failureDiagnosisReadDone = false;
+    let lastFailingTestPath: string | null = null;
+    type TestingPhase = "discover" | "implement" | "verify" | "remediate" | "done";
+    let testingPhase: TestingPhase = "discover";
+    let discoveredContext = false;
+    let wroteTestSinceLastRun = false;
+    let remediationFailureType: string | null = null;
+    let remediationRequiresSourceRead = false;
+    let remediationTestReadDone = false;
+    let remediationSourceReadDone = false;
+    const targetSourcePath = (process.env.TARGET_TEST_FILE || "").trim();
 
     while (turns < maxTurns) {
         turns++;
 
         const response = await openai.chat.completions.create({
-            model: config.model,
+            model: currentModel,
             messages,
             tools: tools.map(t => ({ type: "function", function: t })),
             tool_choice: "auto",
@@ -245,6 +287,12 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
 
                 const toolName = call.function.name;
                 const rawArgs = call.function.arguments || "{}";
+                let parsedArgs: Record<string, unknown> = {};
+                try {
+                    parsedArgs = JSON.parse(rawArgs || "{}") as Record<string, unknown>;
+                } catch {
+                    parsedArgs = {};
+                }
 
                 logger.info(chalk.yellow(`🔧 Tool: ${toolName}`));
                 console.log(chalk.gray(sanitizeToolArgsForLog(rawArgs)));
@@ -265,6 +313,84 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                             message:
                                 "Delivery commands (git/gh) are blocked until run_tests returns {\"passed\": true}. " +
                                 "Implement/fix tests and rerun run_tests.",
+                        }),
+                    });
+                    continue;
+                }
+
+                if (isTestingAgent) {
+                    const isDiscoverTool = ["read_file", "scan_project", "list_untested_files", "analyze_file"].includes(toolName);
+                    if (testingPhase === "discover" && !discoveredContext && (toolName === "write_test_file" || toolName === "run_tests")) {
+                        toolOutputs.push({
+                            role: "tool",
+                            tool_call_id: call.id,
+                            content: JSON.stringify({
+                                error: "DISCOVERY_REQUIRED",
+                                message:
+                                    "Before writing/running tests, gather context with read_file/analyze_file/scan_project/list_untested_files.",
+                            }),
+                        });
+                        continue;
+                    }
+                    if (isDiscoverTool) discoveredContext = true;
+
+                    if (testingPhase === "remediate" && toolName === "write_test_file") {
+                        if (!remediationTestReadDone) {
+                            toolOutputs.push({
+                                role: "tool",
+                                tool_call_id: call.id,
+                                content: JSON.stringify({
+                                    error: "REMEDIATION_READ_TEST_REQUIRED",
+                                    message:
+                                        "Read the failing test file before rewriting during remediation.",
+                                    requiredAction: { tool: "read_file", arguments: { file_path: lastFailingTestPath || "tests/<failing>.test.ts" } },
+                                }),
+                            });
+                            continue;
+                        }
+                        if (remediationRequiresSourceRead && !remediationSourceReadDone) {
+                            toolOutputs.push({
+                                role: "tool",
+                                tool_call_id: call.id,
+                                content: JSON.stringify({
+                                    error: "REMEDIATION_READ_SOURCE_REQUIRED",
+                                    message:
+                                        "Read the target source file before rewriting this failure type.",
+                                    requiredAction: { tool: "read_file", arguments: { file_path: targetSourcePath || "src/<target>.ts" } },
+                                }),
+                            });
+                            continue;
+                        }
+                    }
+
+                    if (testingPhase === "remediate" && toolName === "run_tests" && !wroteTestSinceLastRun) {
+                        toolOutputs.push({
+                            role: "tool",
+                            tool_call_id: call.id,
+                            content: JSON.stringify({
+                                error: "PATCH_REQUIRED_BEFORE_RERUN",
+                                message:
+                                    "Repeated failure remediation requires a test patch before rerunning run_tests.",
+                            }),
+                        });
+                        continue;
+                    }
+                }
+
+                if (isTestingAgent && requireFailureDiagnosisRead && toolName === "write_test_file" && !failureDiagnosisReadDone) {
+                    toolOutputs.push({
+                        role: "tool",
+                        tool_call_id: call.id,
+                        content: JSON.stringify({
+                            error: "DIAGNOSIS_REQUIRED_BEFORE_REWRITE",
+                            message:
+                                "Repeated identical run_tests failures detected. Read the failing test file before rewriting it.",
+                            requiredAction: {
+                                tool: "read_file",
+                                arguments: {
+                                    file_path: lastFailingTestPath || "tests/<failing-test>.test.ts",
+                                },
+                            },
                         }),
                     });
                     continue;
@@ -301,7 +427,7 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                 try {
                     const result = await client.callTool({
                         name: toolName,
-                        arguments: JSON.parse(rawArgs)
+                        arguments: parsedArgs
                     });
 
                     const resultContent = Array.isArray((result as any).content)
@@ -343,8 +469,63 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                                     runTestsPassedThisAttempt = true;
                                 }
                                 if (runTestsPassedThisAttempt) {
+                                    testingPhase = "done";
                                     runTestsFailureStreakHinted = 0;
+                                    repeatedRunTestsFailureCount = 0;
+                                    lastRunTestsFailureFingerprint = null;
+                                    requireFailureDiagnosisRead = false;
+                                    failureDiagnosisReadDone = false;
+                                    lastFailingTestPath = null;
+                                    remediationFailureType = null;
+                                    remediationRequiresSourceRead = false;
+                                    remediationTestReadDone = false;
+                                    remediationSourceReadDone = false;
                                 } else if (typeof parsed?.stderr === "string") {
+                                    testingPhase = "remediate";
+                                    wroteTestSinceLastRun = false;
+                                    const currentFingerprint = deriveRunTestsFailureFingerprint(parsed.stderr);
+                                    if (currentFingerprint === lastRunTestsFailureFingerprint) {
+                                        repeatedRunTestsFailureCount += 1;
+                                    } else {
+                                        repeatedRunTestsFailureCount = 1;
+                                        lastRunTestsFailureFingerprint = currentFingerprint;
+                                    }
+
+                                    const failedFile =
+                                        parsed?.fileResults?.find?.((r: any) => r?.status === "fail")?.file ??
+                                        parsed?.effectiveTestPathPattern ??
+                                        null;
+                                    if (typeof failedFile === "string" && failedFile.trim()) {
+                                        lastFailingTestPath = failedFile.trim();
+                                    }
+
+                                    if (repeatedRunTestsFailureCount >= 2) {
+                                        requireFailureDiagnosisRead = true;
+                                        failureDiagnosisReadDone = false;
+                                    }
+
+                                    const failureType = String(parsed?.failureDiagnostics?.failureType ?? "").trim() || null;
+                                    remediationFailureType = failureType;
+                                    remediationRequiresSourceRead = ["module_resolution", "esm_named_export", "assertion_equality", "assertion_length"]
+                                        .includes(failureType ?? "");
+                                    remediationTestReadDone = false;
+                                    remediationSourceReadDone = false;
+
+                                    if (
+                                        !modelEscalated &&
+                                        fallbackModel &&
+                                        currentModel !== fallbackModel &&
+                                        repeatedRunTestsFailureCount >= Math.max(2, escalateAfterFailures)
+                                    ) {
+                                        modelEscalated = true;
+                                        currentModel = fallbackModel;
+                                        logger.warn(chalk.yellow(`⚠️ Escalating model from ${config.model} to ${currentModel} after repeated failures.`));
+                                        postToolSystemMessages.push(
+                                            `Model escalated to ${currentModel} after repeated run_tests failures. ` +
+                                            `Focus on failure type: ${failureType ?? "unknown"}.`
+                                        );
+                                    }
+
                                     const hint = deriveRunTestsFailureHint(parsed.stderr);
                                     if (hint) {
                                         runTestsFailureStreakHinted += 1;
@@ -367,10 +548,38 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                         }
                     }
 
+                    if (toolName === "read_file" && requireFailureDiagnosisRead) {
+                        const readPath = String(parsedArgs.file_path ?? "").trim();
+                        if (
+                            readPath &&
+                            (!lastFailingTestPath || readPath === lastFailingTestPath || readPath.endsWith(lastFailingTestPath))
+                        ) {
+                            failureDiagnosisReadDone = true;
+                        }
+                    }
+
+                    if (toolName === "read_file") {
+                        const readPath = String(parsedArgs.file_path ?? "").trim();
+                        if (readPath && lastFailingTestPath && (readPath === lastFailingTestPath || readPath.endsWith(lastFailingTestPath))) {
+                            remediationTestReadDone = true;
+                        }
+                        if (
+                            readPath &&
+                            targetSourcePath &&
+                            (readPath === targetSourcePath || readPath.endsWith(targetSourcePath))
+                        ) {
+                            remediationSourceReadDone = true;
+                        }
+                    }
+
                     if (toolName === "write_test_file" && toolText) {
                         try {
                             const parsed = JSON.parse(toolText);
                             if (parsed?.success === true) {
+                                testingPhase = "verify";
+                                wroteTestSinceLastRun = true;
+                                requireFailureDiagnosisRead = false;
+                                failureDiagnosisReadDone = false;
                                 for (const key of [...toolRetryCounter.keys()]) {
                                     if (key.startsWith("run_tests:")) {
                                         toolRetryCounter.delete(key);

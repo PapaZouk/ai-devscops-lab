@@ -170,7 +170,7 @@ export async function analyzeSourceFile(filePath: string): Promise<SourceFileAna
 
   // ─── Exported classes ─────────────────────────────────────────────────────────
   const classRegex = /^export\s+(?:default\s+)?(?:abstract\s+)?class\s+(\w+)(?:\s+extends\s+(\w+))?(?:\s+implements\s+([\w,\s]+))?/;
-  const methodRegex = /^\s+(?:(?:public|private|protected|static|async|override)\s+)*(\w+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)\s*(?::\s*(.+?))?\s*\{?$/;
+  const methodRegex = /^(?:(?:public|private|protected|static|async|override)\s+)*(\w+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)\s*(?::\s*(.+?))?\s*\{?$/;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
