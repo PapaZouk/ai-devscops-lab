@@ -6,13 +6,13 @@
  *
  * Tools:
  *   analyze_file            — Parse exports, signatures, and mock hints from a source file
- *   scan_project            — Understand Jest config, tsconfig, and untested files
+ *   scan_project            — Return package metadata plus source/test/untested file map
  *   generate_test_scaffold  — Produce a complete Jest test file scaffold
  *   read_file               — Read any file for inspection
  *   write_test_file         — Save a generated test file to disk
  *   check_coverage_gaps     — Diff source vs existing tests to find missing coverage
  *   suggest_mock_strategy   — Return ready-to-use mock snippets for detected dependencies
- *   get_jest_config_template — Generate a tailored jest.config.ts
+ *   run_tests               — Execute tests and return structured results
  *   install_test_dependencies — Install only approved test dependencies (Jest + Supertest)
  *   run_command             — Run delivery commands (git/gh) or scripts under skills/
  *
@@ -44,11 +44,6 @@ async function main(): Promise<void> {
     nodeVersion: process.version,
   });
 
-  // ─── Validate PROJECT_ROOT ─────────────────────────────────────────────────
-  // All tools resolve file paths relative to this variable.
-  // We log a clear warning if it is missing but keep the server running so
-  // the agent receives the error message from get_project_root() rather than
-  // experiencing a silent process crash.
   const projectRoot = process.env.PROJECT_ROOT;
   if (!projectRoot) {
     rootLogger.error(
@@ -59,22 +54,19 @@ async function main(): Promise<void> {
     rootLogger.info("Project root: {root}", { root: projectRoot });
   }
 
-  // ─── Create MCP server ─────────────────────────────────────────────────────
   const server = new McpServer({
     name: "unit-test-server",
     version: "1.0.0",
   });
 
-  // ─── Register primitives ───────────────────────────────────────────────────
   registerTools(server);
   registerResources(server);
   registerPrompts(server);
 
   rootLogger.info("MCP primitives registered", {
-    tools: 14,  // 0:get_project_root 1:analyze_file 2:scan_project 3:list_untested_files
+    tools: 12,  // 0:get_project_root 1:analyze_file 2:scan_project 3:list_untested_files
     // 4:generate_test_scaffold 5:read_file 6:write_test_file 7:check_coverage_gaps
-    // 8:suggest_mock_strategy 9:get_jest_config_template
-    // 10:validate_test_setup 11:run_tests 12:install_test_dependencies 13:run_command
+    // 8:suggest_mock_strategy 9:run_tests 10:install_test_dependencies 11:run_command
     resources: 3,
     prompts: 3,
   });

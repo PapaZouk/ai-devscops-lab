@@ -6,14 +6,14 @@ An **MCP (Model Context Protocol) server** that gives AI agents — Claude, Curs
 
 ## What It Does
 
-The server exposes 8 tools, 3 knowledge-base resources, and 3 guided workflow prompts that together enable an AI agent to:
+The server exposes 12 tools, 3 knowledge-base resources, and 3 guided workflow prompts that together enable an AI agent to:
 
 1. **Understand your project** — scan Jest config, tsconfig, and find untested source files.
 2. **Deeply analyze any source file** — extract all exported functions, classes, async signatures, and import dependencies.
 3. **Generate a complete test scaffold** — describe blocks, AAA-structured test cases, mock stubs.
 4. **Identify coverage gaps** — compare source vs existing tests, report untested functions/branches.
 5. **Suggest mocking strategies** — return copy-paste-ready mock code for fs, axios, Prisma, Mongoose, AWS SDK, nodemailer, and more.
-6. **Generate tailored jest.config.ts** — with ts-jest or @swc/jest, path alias mappers, and coverage thresholds.
+6. **Run tests and parse results** — execute Jest and return structured pass/fail summaries.
 
 ---
 
@@ -22,13 +22,13 @@ The server exposes 8 tools, 3 knowledge-base resources, and 3 guided workflow pr
 | Tool | Description |
 |------|-------------|
 | `analyze_file` | Parse all exports, signatures, JSDoc, and suggest mock hints |
-| `scan_project` | Understand Jest config, tsconfig, and untested source files |
+| `scan_project` | Return package metadata plus source/test/untested file map |
 | `generate_test_scaffold` | Produce a complete Jest test file with describe/it blocks |
 | `read_file` | Read any file content for inspection |
 | `write_test_file` | Save a generated test file to disk (creates dirs automatically) |
 | `check_coverage_gaps` | Diff source vs existing tests to find missing coverage |
 | `suggest_mock_strategy` | Return ready-to-use mock snippets for detected dependencies |
-| `get_jest_config_template` | Generate a tailored `jest.config.ts` |
+| `run_tests` | Execute tests and return structured results |
 
 ## Resources Reference
 
@@ -123,7 +123,7 @@ const client = await experimental_createMCPClient({
   }),
 });
 
-const tools = await client.tools(); // returns all 8 tools as Vercel AI SDK tools
+const tools = await client.tools(); // returns all tools as Vercel AI SDK tools
 ```
 
 ---
@@ -137,7 +137,7 @@ Invoke the `generate-tests-for-file` prompt in Claude Desktop or Cursor:
 > **User:** Use the `generate-tests-for-file` prompt on `src/services/userService.ts`
 
 The agent will:
-1. `scan_project(".")` — understand jest config and existing tests
+1. `scan_project(".")` — map source files, test files, and untested files
 2. `analyze_file("src/services/userService.ts")` — extract all exports
 3. Read `testing-patterns://jest-best-practices`
 4. `generate_test_scaffold(...)` — produce a full test scaffold
@@ -169,16 +169,14 @@ suggest_mock_strategy({ file_path: "src/repositories/userRepo.ts" })
 
 Returns ready-to-paste mock code for Prisma (or whichever ORM is detected).
 
-### Example 4 — Generate jest.config.ts
+### Example 4 — Run tests for a file
 
-> **User:** Create a jest.config.ts for my TypeScript ESM project
+> **User:** Run tests only for `src/__tests__/userService.test.ts`
 
 ```
-get_jest_config_template({
-  project_root: ".",
-  use_swc: false,
-  test_environment: "node",
-  coverage_threshold: 80
+run_tests({
+  test_path_pattern: "src/__tests__/userService.test.ts",
+  coverage: false
 })
 ```
 
@@ -199,7 +197,7 @@ src/
 ├── index.ts                  ← MCP server entry point (STDIO transport)
 ├── logger.ts                 ← LogTape setup — always writes to stderr (never stdout)
 ├── tools/
-│   └── index.ts              ← All 8 tool registrations
+│   └── index.ts              ← All tool registrations
 ├── resources/
 │   └── index.ts              ← 3 knowledge-base resources (best practices guides)
 ├── prompts/

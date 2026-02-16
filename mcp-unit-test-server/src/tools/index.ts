@@ -77,10 +77,6 @@ function inferTestConvention(
 
 /** Register all tools on the MCP server */
 export function registerTools(server: McpServer): void {
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // 0. get_project_root  ← always the first call in any workflow
-  // ───────────────────────────────────────────────────────────────────────────
   server.tool(
     "get_project_root",
     `Returns the project root directory configured via the PROJECT_ROOT environment variable.
@@ -129,9 +125,6 @@ running any analysis or generating any tests.`,
     }
   );
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // 1. analyze_file
-  // ───────────────────────────────────────────────────────────────────────────
   server.tool(
     "analyze_file",
     `Deeply analyze a TypeScript or JavaScript source file.
@@ -172,18 +165,12 @@ Call this before generating any tests.`,
     }
   );
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // 2. scan_project
-  // ───────────────────────────────────────────────────────────────────────────
   server.tool(
     "scan_project",
-    `Scan the project and return:
-- package.json metadata (jest / vitest / typescript detected, test scripts)
-- Jest configuration (testMatch patterns, transform, testEnvironment, coverage thresholds)
-- tsconfig.json settings (strict mode, path aliases, baseUrl)
-- All source files and existing test files
-- Which source files have NO corresponding test file yet
-- Actionable setup recommendations
+    `Scan the project and return core testing context:
+- package metadata (name, scripts, framework hints)
+- source files, test files, and untested source files
+- file-count summary and quick coverage ratio
 
 Defaults to scanning the full PROJECT_ROOT. Pass subdirectory to narrow the scan.`,
     {
@@ -201,8 +188,33 @@ Defaults to scanning the full PROJECT_ROOT. Pass subdirectory to narrow the scan
         const scanPath = resolveProjectPath(subdirectory ?? null);
         toolLogger.debug("scan_project resolved: {path}", { path: scanPath });
         const structure = await scanProjectStructure(scanPath);
+        const coverageRatio = structure.sourceFiles.length > 0
+          ? Number((((structure.sourceFiles.length - structure.untestedSourceFiles.length) /
+            structure.sourceFiles.length) * 100).toFixed(2))
+          : null;
+
+        const response = {
+          rootDir: structure.rootDir,
+          packageJson: {
+            found: structure.packageJson.found,
+            name: structure.packageJson.name,
+            scripts: structure.packageJson.scripts,
+            hasJest: structure.packageJson.hasJest,
+            hasVitest: structure.packageJson.hasVitest,
+            hasTypeScript: structure.packageJson.hasTypeScript,
+          },
+          sourceFiles: structure.sourceFiles,
+          testFiles: structure.testFiles,
+          untestedSourceFiles: structure.untestedSourceFiles,
+          summary: {
+            sourceFiles: structure.sourceFiles.length,
+            testFiles: structure.testFiles.length,
+            untestedSourceFiles: structure.untestedSourceFiles.length,
+            coverageRatioPercent: coverageRatio,
+          },
+        };
         return {
-          content: [{ type: "text", text: JSON.stringify(structure, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
         };
       } catch (err) {
         toolLogger.error("scan_project failed: {error}", {
@@ -216,9 +228,6 @@ Defaults to scanning the full PROJECT_ROOT. Pass subdirectory to narrow the scan
     }
   );
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // 3. list_untested_files  ← dedicated focused tool for the "find gaps" workflow
-  // ───────────────────────────────────────────────────────────────────────────
   server.tool(
     "list_untested_files",
     `Return every source file in the project that has no corresponding test file.
@@ -247,9 +256,9 @@ Use this as the starting point of any "write missing tests" workflow.`,
     async ({ subdirectory, show_existing_tests }) => {
       toolLogger.info("list_untested_files called", { subdirectory });
       try {
-        const scanPath   = resolveProjectPath(subdirectory ?? null);
+        const scanPath = resolveProjectPath(subdirectory ?? null);
         const projectRoot = getProjectRoot();
-        const structure  = await scanProjectStructure(scanPath);
+        const structure = await scanProjectStructure(scanPath);
 
         // Convert absolute paths to project-relative paths for easy reuse
         const toRelative = (abs: string) => path.relative(projectRoot, abs);
@@ -266,10 +275,10 @@ Use this as the starting point of any "write missing tests" workflow.`,
             coverageRatio:
               structure.sourceFiles.length > 0
                 ? `${Math.round(
-                    ((structure.sourceFiles.length - untestedRelative.length) /
-                      structure.sourceFiles.length) *
-                      100
-                  )}% of source files have tests`
+                  ((structure.sourceFiles.length - untestedRelative.length) /
+                    structure.sourceFiles.length) *
+                  100
+                )}% of source files have tests`
                 : "no source files found",
           },
           untestedFiles: untestedRelative,
@@ -299,9 +308,6 @@ Use this as the starting point of any "write missing tests" workflow.`,
     }
   );
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // 4. generate_test_scaffold
-  // ───────────────────────────────────────────────────────────────────────────
   server.tool(
     "generate_test_scaffold",
     `Generate a complete Jest test file scaffold for a source file.
@@ -341,7 +347,7 @@ Returns the generated test content — use write_test_file to save it.`,
       try {
         const scanPath = resolveProjectPath(null);
         const structure = await scanProjectStructure(scanPath);
-        const resolvedSource  = resolveProjectPath(file_path);
+        const resolvedSource = resolveProjectPath(file_path);
         const selectedConvention = convention ?? inferTestConvention(resolvedSource, structure);
         const resolvedTestPath = test_file_path
           ? resolveProjectPath(test_file_path)
@@ -350,7 +356,7 @@ Returns the generated test content — use write_test_file to save it.`,
         toolLogger.debug("scaffold paths", { source: resolvedSource, test: resolvedTestPath });
 
         const analysis = await analyzeSourceFile(resolvedSource);
-        const scaffold  = generateTestScaffold(analysis, resolvedTestPath, {
+        const scaffold = generateTestScaffold(analysis, resolvedTestPath, {
           testFramework: framework ?? "jest",
           includeEdgeCases: include_edge_cases ?? true,
           moduleStyle: "esm",
@@ -384,9 +390,6 @@ Returns the generated test content — use write_test_file to save it.`,
     }
   );
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // 5. read_file
-  // ───────────────────────────────────────────────────────────────────────────
   server.tool(
     "read_file",
     `Read the contents of any file in the project.
@@ -407,10 +410,10 @@ Example: "src/controllers/auth.ts" or "jest.config.ts"`,
       toolLogger.info("read_file called", { file_path });
       try {
         const resolved = resolveProjectPath(file_path);
-        const content  = await fs.readFile(resolved, "utf-8");
-        const lines    = content.split("\n");
-        const slice    = max_lines ? lines.slice(0, max_lines) : lines;
-        const result   = max_lines && lines.length > max_lines
+        const content = await fs.readFile(resolved, "utf-8");
+        const lines = content.split("\n");
+        const slice = max_lines ? lines.slice(0, max_lines) : lines;
+        const result = max_lines && lines.length > max_lines
           ? slice.join("\n") + `\n\n... (showing ${max_lines} of ${lines.length} lines)`
           : slice.join("\n");
 
@@ -424,9 +427,6 @@ Example: "src/controllers/auth.ts" or "jest.config.ts"`,
     }
   );
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // 6. write_test_file
-  // ───────────────────────────────────────────────────────────────────────────
   server.tool(
     "write_test_file",
     `Write a test file to disk inside the project.
@@ -437,7 +437,7 @@ Requires overwrite: true if the file already exists.`,
       file_path: z
         .string()
         .describe("Destination path, relative to PROJECT_ROOT. Example: \"src/__tests__/user.test.ts\""),
-      content:   z.string().describe("Full test file content"),
+      content: z.string().describe("Full test file content"),
       overwrite: z.boolean().optional().default(false),
     },
     async ({ file_path, content, overwrite }) => {
@@ -514,9 +514,6 @@ Requires overwrite: true if the file already exists.`,
     }
   );
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // 7. check_coverage_gaps
-  // ───────────────────────────────────────────────────────────────────────────
   server.tool(
     "check_coverage_gaps",
     `Compare a source file against its existing test file and report what is missing:
@@ -537,8 +534,8 @@ Both paths resolved relative to PROJECT_ROOT.`,
       toolLogger.info("check_coverage_gaps called", { source_file_path, test_file_path });
       try {
         const resolvedSource = resolveProjectPath(source_file_path);
-        const resolvedTest   = resolveProjectPath(test_file_path);
-        const analysis       = await analyzeSourceFile(resolvedSource);
+        const resolvedTest = resolveProjectPath(test_file_path);
+        const analysis = await analyzeSourceFile(resolvedSource);
 
         let testContent = "";
         try {
@@ -620,9 +617,6 @@ Both paths resolved relative to PROJECT_ROOT.`,
     }
   );
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // 8. suggest_mock_strategy
-  // ───────────────────────────────────────────────────────────────────────────
   server.tool(
     "suggest_mock_strategy",
     `Analyze a source file's imports and return ready-to-use Jest mock snippets for
@@ -742,466 +736,7 @@ afterEach(() => { process.env = orig; });`,
   );
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 9. get_jest_config_template
-  // ───────────────────────────────────────────────────────────────────────────
-  server.tool(
-    "get_jest_config_template",
-    `Generate a tailored jest.config.ts for the project.
-Reads tsconfig.json path aliases and builds the correct moduleNameMapper automatically.
-Defaults to PROJECT_ROOT; pass subdirectory for monorepo packages.`,
-    {
-      subdirectory: z
-        .string()
-        .optional()
-        .describe("Optional subdirectory within PROJECT_ROOT (e.g. \"packages/api\"). Omit for project root."),
-      use_swc: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe("Use @swc/jest (faster) instead of ts-jest"),
-      test_environment: z
-        .enum(["node", "jsdom"])
-        .optional()
-        .default("node"),
-      coverage_threshold: z
-        .number()
-        .min(0)
-        .max(100)
-        .optional()
-        .default(80),
-    },
-    async ({ subdirectory, use_swc, test_environment, coverage_threshold }) => {
-      toolLogger.info("get_jest_config_template called");
-      try {
-        const scanPath   = resolveProjectPath(subdirectory ?? null);
-        const structure  = await scanProjectStructure(scanPath);
-        const threshold  = coverage_threshold ?? 80;
-
-        const nameMapper: Record<string, string> = {
-          "^(\\.{1,2}/.*)\\.js$": "$1",
-        };
-        for (const [alias, targets] of Object.entries(structure.tsConfig.paths)) {
-          const key    = alias.replace("/*", "/(.*)");
-          const target = targets[0]?.replace("/*", "/$1") ?? "";
-          nameMapper[`^${key}$`] = `<rootDir>/${target}`;
-        }
-
-        const configTemplate = `import type { Config } from "jest";
-
-const config: Config = {
-  preset: ${use_swc ? '"@swc/jest"' : '"ts-jest"'},
-  extensionsToTreatAsEsm: [".ts"],
-  testEnvironment: "${test_environment ?? "node"}",
-  transform: {
-    "^.+\\.tsx?$": [${use_swc ? '"@swc/jest"' : '"ts-jest"'}, { useESM: true${use_swc ? "" : ", tsconfig: { strict: true }"} }],
-  },
-  moduleNameMapper: ${JSON.stringify(nameMapper, null, 4)},
-  testMatch: ["**/__tests__/**/*.test.ts", "**/?(*.)+(spec|test).ts"],
-  testPathIgnorePatterns: ["/node_modules/", "/build/", "/dist/"],
-  collectCoverageFrom: ["src/**/*.ts", "!src/**/*.d.ts", "!src/**/*.test.ts"],
-  coverageProvider: "v8",
-  coverageThreshold: {
-    global: {
-      lines: ${threshold},
-      branches: ${Math.max(threshold - 5, 0)},
-      functions: ${threshold},
-      statements: ${threshold},
-    },
-  },
-  verbose: process.env.CI === "true",
-};
-
-export default config;
-`;
-
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify({
-              configTemplate,
-              saveAs: path.join(scanPath, "jest.config.ts"),
-              projectRoot: getProjectRoot(),
-              installCommand: use_swc
-                ? "npm install --save-dev jest @types/jest @swc/jest @swc/core"
-                : "npm install --save-dev jest @types/jest ts-jest",
-            }, null, 2),
-          }],
-        };
-      } catch (err) {
-        return {
-          content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-          isError: true,
-        };
-      }
-    }
-  );
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // 10. validate_test_setup
-  // ───────────────────────────────────────────────────────────────────────────
-  server.tool(
-    "validate_test_setup",
-    `Deeply audit the project's test infrastructure and report every problem that would
-prevent tests from running. Checks:
-
-DEPENDENCIES
-  - jest / vitest installed
-  - ts-jest or @swc/jest present when TypeScript is detected
-  - @types/jest installed for TypeScript projects
-  - All packages declared in jest transform/preset actually exist in node_modules
-  - node_modules directory exists at all (i.e. npm install has been run)
-
-JEST CONFIGURATION
-  - jest.config.* file exists (or jest key in package.json)
-  - preset value matches an installed package
-  - transform keys compile to a runnable loader
-  - testEnvironment value is valid
-  - moduleNameMapper ESM fix present when "type":"module" in package.json
-  - testMatch / testPathIgnorePatterns are sensible
-
-TYPESCRIPT
-  - tsconfig.json present
-  - compilerOptions.strict enabled (warning if not)
-  - module / moduleResolution compatible with jest transform
-  - paths aliases have a corresponding moduleNameMapper entry in jest config
-
-ENVIRONMENT
-  - node_modules/.bin/jest (or vitest) executable exists
-  - No conflicting jest versions in nested node_modules
-
-Returns a structured report: errors (block test execution), warnings (degrade quality),
-and a recommended fix for each issue.`,
-    {
-      subdirectory: z
-        .string()
-        .optional()
-        .describe("Subdirectory within PROJECT_ROOT to audit. Omit to audit the full project."),
-    },
-    async ({ subdirectory }) => {
-      toolLogger.info("validate_test_setup called");
-      try {
-        const scanPath    = resolveProjectPath(subdirectory ?? null);
-        const projectRoot = getProjectRoot();
-
-        const errors:   Array<{ code: string; message: string; fix: string }> = [];
-        const warnings: Array<{ code: string; message: string; fix: string }> = [];
-        const passed:   string[] = [];
-
-        // ── Helper: check if a package exists in node_modules ────────────────
-        const inNodeModules = async (pkg: string): Promise<boolean> => {
-          // Handle scoped packages and sub-paths: just check the package root
-          const pkgRoot = pkg.startsWith("@")
-            ? pkg.split("/").slice(0, 2).join("/")
-            : pkg.split("/")[0];
-          try {
-            await fs.access(path.join(scanPath, "node_modules", pkgRoot as string));
-            return true;
-          } catch {
-            return false;
-          }
-        };
-
-        // ── 1. node_modules exists ───────────────────────────────────────────
-        const nmExists = await inNodeModules("."); // check node_modules itself
-        try {
-          await fs.access(path.join(scanPath, "node_modules"));
-          passed.push("node_modules directory exists");
-        } catch {
-          errors.push({
-            code: "NO_NODE_MODULES",
-            message: "node_modules directory not found — dependencies are not installed.",
-            fix: `Run: cd ${scanPath} && npm install`,
-          });
-        }
-
-        // ── 2. Read package.json ─────────────────────────────────────────────
-        let pkg: Record<string, unknown> = {};
-        try {
-          const raw = await fs.readFile(path.join(scanPath, "package.json"), "utf-8");
-          pkg = JSON.parse(raw) as Record<string, unknown>;
-          passed.push("package.json found and valid JSON");
-        } catch {
-          errors.push({
-            code: "NO_PACKAGE_JSON",
-            message: "package.json not found or invalid JSON.",
-            fix: "Ensure you are pointing PROJECT_ROOT at the correct directory.",
-          });
-        }
-
-        const allDeps: Record<string, string> = {
-          ...((pkg.dependencies as Record<string, string>) ?? {}),
-          ...((pkg.devDependencies as Record<string, string>) ?? {}),
-        };
-        const isEsmPackage = (pkg.type as string) === "module";
-        const hasTS = "typescript" in allDeps;
-
-        // ── 3. Jest or Vitest declared ───────────────────────────────────────
-        const hasJest   = "jest" in allDeps || "@jest/globals" in allDeps;
-        const hasVitest = "vitest" in allDeps;
-
-        if (!hasJest && !hasVitest) {
-          errors.push({
-            code: "NO_TEST_FRAMEWORK",
-            message: "Neither jest nor vitest found in dependencies.",
-            fix: "npm install --save-dev jest @types/jest ts-jest",
-          });
-        } else {
-          passed.push(`Test framework declared: ${hasVitest ? "vitest" : "jest"}`);
-
-          // Check the binary actually exists
-          const binName = hasVitest ? "vitest" : "jest";
-          try {
-            await fs.access(path.join(scanPath, "node_modules", ".bin", binName));
-            passed.push(`${binName} binary found in node_modules/.bin`);
-          } catch {
-            errors.push({
-              code: "MISSING_BIN",
-              message: `${binName} declared in package.json but binary missing from node_modules/.bin.`,
-              fix: `npm install (node_modules may be stale or incomplete)`,
-            });
-          }
-        }
-
-        // ── 4. TypeScript-specific deps ──────────────────────────────────────
-        if (hasTS && hasJest) {
-          const hasTsJest = "ts-jest" in allDeps;
-          const hasSwcJest = "@swc/jest" in allDeps;
-
-          if (!hasTsJest && !hasSwcJest) {
-            errors.push({
-              code: "NO_TS_TRANSFORM",
-              message: "TypeScript project with Jest but no ts-jest or @swc/jest transform found.",
-              fix: "npm install --save-dev ts-jest  OR  npm install --save-dev @swc/jest @swc/core",
-            });
-          } else {
-            passed.push(`TypeScript transform: ${hasTsJest ? "ts-jest" : "@swc/jest"}`);
-
-            // Check the transform package is actually installed
-            const transformPkg = hasTsJest ? "ts-jest" : "@swc/jest";
-            if (!(await inNodeModules(transformPkg))) {
-              errors.push({
-                code: "TRANSFORM_NOT_INSTALLED",
-                message: `${transformPkg} declared in package.json but not found in node_modules.`,
-                fix: "npm install",
-              });
-            }
-          }
-
-          if (!("@types/jest" in allDeps)) {
-            warnings.push({
-              code: "NO_TYPES_JEST",
-              message: "@types/jest not installed — TypeScript will not recognise describe/it/expect.",
-              fix: "npm install --save-dev @types/jest",
-            });
-          } else {
-            passed.push("@types/jest installed");
-          }
-        }
-
-        // ── 5. Jest config file ──────────────────────────────────────────────
-        const jestConfigFiles = [
-          "jest.config.ts", "jest.config.js", "jest.config.mjs", "jest.config.cjs",
-        ];
-        let foundJestConfig: string | null = null;
-        for (const f of jestConfigFiles) {
-          try {
-            await fs.access(path.join(scanPath, f));
-            foundJestConfig = f;
-            break;
-          } catch { /* not found */ }
-        }
-
-        const hasInlineJestConfig = typeof pkg.jest === "object" && pkg.jest !== null;
-
-        if (!foundJestConfig && !hasInlineJestConfig) {
-          errors.push({
-            code: "NO_JEST_CONFIG",
-            message: "No jest.config.* file and no jest key in package.json found.",
-            fix: "Call get_jest_config_template to generate a jest.config.ts, then write_test_file to save it.",
-          });
-        } else {
-          passed.push(`Jest config found: ${foundJestConfig ?? "package.json#jest"}`);
-
-          // Read & inspect config if it's a JS/JSON variant we can parse
-          if (foundJestConfig && (foundJestConfig.endsWith(".js") || foundJestConfig.endsWith(".cjs"))) {
-            try {
-              const raw = await fs.readFile(path.join(scanPath, foundJestConfig), "utf-8");
-
-              // Check for ESM moduleNameMapper fix
-              if (isEsmPackage && !raw.includes("moduleNameMapper")) {
-                warnings.push({
-                  code: "MISSING_ESM_MAPPER",
-                  message: 'package.json has "type":"module" but jest.config has no moduleNameMapper for .js extension rewriting.',
-                  fix: 'Add to jest.config: moduleNameMapper: { "^(\\\\.{1,2}/.*)\\\\.js$": "$1" }',
-                });
-              }
-
-              // Check preset is installed
-              const presetMatch = raw.match(/preset\s*:\s*["']([^"']+)["']/);
-              if (presetMatch) {
-                const preset = presetMatch[1];
-                if (preset && !(await inNodeModules(preset))) {
-                  errors.push({
-                    code: "PRESET_NOT_INSTALLED",
-                    message: `Jest preset "${preset}" declared but not found in node_modules.`,
-                    fix: `npm install --save-dev ${preset}`,
-                  });
-                }
-              }
-
-              // Check testEnvironment
-              const envMatch = raw.match(/testEnvironment\s*:\s*["']([^"']+)["']/);
-              if (envMatch) {
-                const env = envMatch[1];
-                if (env === "jsdom" && !(await inNodeModules("jest-environment-jsdom"))) {
-                  errors.push({
-                    code: "MISSING_JSDOM",
-                    message: 'testEnvironment is "jsdom" but jest-environment-jsdom is not installed.',
-                    fix: "npm install --save-dev jest-environment-jsdom",
-                  });
-                }
-              }
-            } catch { /* couldn't read config */ }
-          }
-
-          // .ts config — we can still do text-based checks
-          if (foundJestConfig?.endsWith(".ts")) {
-            try {
-              const raw = await fs.readFile(path.join(scanPath, foundJestConfig), "utf-8");
-
-              if (isEsmPackage && !raw.includes("moduleNameMapper")) {
-                warnings.push({
-                  code: "MISSING_ESM_MAPPER",
-                  message: 'package.json has "type":"module" but no moduleNameMapper for .js extension rewriting detected.',
-                  fix: 'Add: moduleNameMapper: { "^(\\\\.{1,2}/.*)\\\\.js$": "$1" }',
-                });
-              }
-
-              const presetMatch = raw.match(/preset\s*:\s*["']([^"']+)["']/);
-              if (presetMatch) {
-                const preset = presetMatch[1];
-                if (preset && !(await inNodeModules(preset))) {
-                  errors.push({
-                    code: "PRESET_NOT_INSTALLED",
-                    message: `Jest preset "${preset}" declared but not found in node_modules.`,
-                    fix: `npm install --save-dev ${preset}`,
-                  });
-                } else if (preset) {
-                  passed.push(`Jest preset "${preset}" is installed`);
-                }
-              }
-
-              const envMatch = raw.match(/testEnvironment\s*:\s*["']([^"']+)["']/);
-              if (envMatch && envMatch[1] === "jsdom") {
-                if (!(await inNodeModules("jest-environment-jsdom"))) {
-                  errors.push({
-                    code: "MISSING_JSDOM",
-                    message: 'testEnvironment is "jsdom" but jest-environment-jsdom is not installed.',
-                    fix: "npm install --save-dev jest-environment-jsdom",
-                  });
-                }
-              }
-            } catch { /* couldn't read */ }
-          }
-        }
-
-        // ── 6. tsconfig checks ───────────────────────────────────────────────
-        if (hasTS) {
-          try {
-            const tsraw = await fs.readFile(path.join(scanPath, "tsconfig.json"), "utf-8");
-            const tsconfig = parseJsonOrJsonc(tsraw);
-            if (!tsconfig) {
-              throw new Error("Invalid tsconfig.json format");
-            }
-            const co = (tsconfig.compilerOptions as Record<string, unknown>) ?? {};
-
-            if (!co.strict) {
-              warnings.push({
-                code: "TS_STRICT_OFF",
-                message: "TypeScript strict mode is disabled — type errors in tests may go undetected.",
-                fix: 'Add "strict": true to tsconfig.json compilerOptions.',
-              });
-            } else {
-              passed.push("TypeScript strict mode enabled");
-            }
-
-            const mod = (co.module as string ?? "").toLowerCase();
-            const modRes = (co.moduleResolution as string ?? "").toLowerCase();
-
-            if (mod.includes("node16") || mod.includes("nodenext")) {
-              if (!modRes.includes("node16") && !modRes.includes("nodenext")) {
-                warnings.push({
-                  code: "MODULERES_MISMATCH",
-                  message: `module is "${co.module}" but moduleResolution is "${co.moduleResolution ?? "not set"}". They should match.`,
-                  fix: `Set "moduleResolution": "${co.module}" in tsconfig.json`,
-                });
-              }
-            }
-
-            // Check path aliases have matching moduleNameMapper
-            const tsPaths = (co.paths as Record<string, unknown>) ?? {};
-            const aliasCount = Object.keys(tsPaths).length;
-            if (aliasCount > 0 && !foundJestConfig && !hasInlineJestConfig) {
-              warnings.push({
-                code: "PATHS_NO_MAPPER",
-                message: `tsconfig has ${aliasCount} path alias(es) but no jest config found to mirror them as moduleNameMapper.`,
-                fix: "Run get_jest_config_template — it auto-generates moduleNameMapper from tsconfig paths.",
-              });
-            }
-          } catch {
-            warnings.push({
-              code: "NO_TSCONFIG",
-              message: "TypeScript detected but tsconfig.json not found at project root.",
-              fix: "Create tsconfig.json or verify PROJECT_ROOT points to the right directory.",
-            });
-          }
-        }
-
-        // ── 7. Test files exist ──────────────────────────────────────────────
-        const structure = await scanProjectStructure(scanPath);
-        if (structure.testFiles.length === 0) {
-          warnings.push({
-            code: "NO_TEST_FILES",
-            message: "No test files found (*.test.ts / *.spec.ts / __tests__/**). Nothing to run yet.",
-            fix: "Use list_untested_files then generate_test_scaffold to create your first tests.",
-          });
-        } else {
-          passed.push(`${structure.testFiles.length} test file(s) found`);
-        }
-
-        // ── Summary ──────────────────────────────────────────────────────────
-        const canRun = errors.length === 0;
-
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify({
-              projectRoot,
-              auditedDirectory: scanPath,
-              canRunTests: canRun,
-              summary: canRun
-                ? `✅ Setup looks good — ${passed.length} checks passed, ${warnings.length} warning(s).`
-                : `❌ ${errors.length} error(s) must be fixed before tests can run.`,
-              errors,
-              warnings,
-              passed,
-            }, null, 2),
-          }],
-        };
-      } catch (err) {
-        toolLogger.error("validate_test_setup failed: {error}", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        return {
-          content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-          isError: true,
-        };
-      }
-    }
-  );
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // 11. run_tests
+  // 10. run_tests
   // ───────────────────────────────────────────────────────────────────────────
   server.tool(
     "run_tests",
@@ -1219,11 +754,7 @@ Returns:
   - Full stdout + stderr output
   - Parsed summary: test suites passed/failed, tests passed/failed, duration
   - Per-file results extracted from Jest's output
-  - Coverage summary lines (when coverage: true)
-
-Always calls validate_test_setup first and aborts early with a clear message
-if the setup has blocking errors, so the agent doesn't waste time running
-a broken configuration.`,
+  - Coverage summary lines (when coverage: true)`,
     {
       test_path_pattern: z
         .string()
@@ -1410,13 +941,13 @@ a broken configuration.`,
               // ESM TypeScript projects need this for Jest runtime to execute ESM test modules.
               ...(isEsmPackage
                 ? {
-                    NODE_OPTIONS: [
-                      process.env.NODE_OPTIONS ?? "",
-                      "--experimental-vm-modules",
-                    ]
-                      .join(" ")
-                      .trim(),
-                  }
+                  NODE_OPTIONS: [
+                    process.env.NODE_OPTIONS ?? "",
+                    "--experimental-vm-modules",
+                  ]
+                    .join(" ")
+                    .trim(),
+                }
                 : {}),
             },
             shell: useNpm,
@@ -1529,9 +1060,9 @@ a broken configuration.`,
               exitCode: result.exitCode,
               timedOut: result.timedOut,
               summary: {
-                suites:   suitesMatch?.[1]?.trim() ?? "unknown",
-                tests:    testsMatch?.[1]?.trim()  ?? "unknown",
-                duration: timeMatch?.[1]?.trim()   ?? "unknown",
+                suites: suitesMatch?.[1]?.trim() ?? "unknown",
+                tests: testsMatch?.[1]?.trim() ?? "unknown",
+                duration: timeMatch?.[1]?.trim() ?? "unknown",
               },
               fileResults,
               qualityIssues,
@@ -1544,9 +1075,9 @@ a broken configuration.`,
                 ? "All tests passed."
                 : qualityIssues.length > 0
                   ? "Quality gate failed: generated tests still contain scaffold placeholders. Replace placeholders with meaningful assertions and rerun run_tests."
-                : result.timedOut
-                  ? `Tests timed out after ${timeout_seconds}s. Try a smaller test_path_pattern or increase timeout_seconds.`
-                  : "Tests failed. Read stdout/stderr for details, then use check_coverage_gaps or read_file to inspect failing tests.",
+                  : result.timedOut
+                    ? `Tests timed out after ${timeout_seconds}s. Try a smaller test_path_pattern or increase timeout_seconds.`
+                    : "Tests failed. Read stdout/stderr for details, then use check_coverage_gaps or read_file to inspect failing tests.",
             }, null, 2),
           }],
         };
@@ -1563,7 +1094,7 @@ a broken configuration.`,
   );
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 12. install_test_dependencies
+  // 11. install_test_dependencies
   // ───────────────────────────────────────────────────────────────────────────
   server.tool(
     "install_test_dependencies",
@@ -1700,7 +1231,7 @@ Use this when tests fail due to missing Jest tooling.`,
   );
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 13. run_command
+  // 12. run_command
   // ───────────────────────────────────────────────────────────────────────────
   server.tool(
     "run_command",

@@ -46,6 +46,7 @@ Create reliable unit tests that run successfully in CI without changing unrelate
 - If tests fail due to imports from non-unit modules, mock those modules or narrow the test scope.
 - If config mismatch causes "No tests found", update only the minimal `testMatch` needed.
 - Do not replace working scripts/config wholesale.
+- Read stderr output to understand the reason of failing before starting to write a patch for the test.
 
 6. Delivery after success:
 - After `run_tests` passes, execute the git delivery workflow:
