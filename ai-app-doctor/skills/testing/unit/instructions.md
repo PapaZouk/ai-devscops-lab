@@ -44,6 +44,9 @@ Create reliable unit tests that run successfully in CI without changing unrelate
 
 5. Stabilize failures:
 - If tests fail due to imports from non-unit modules, mock those modules or narrow the test scope.
+- If Jest reports `Could not locate module ... mapped as: $1`, your relative mock/import path is wrong for the test file location. In `tests/**`, target source modules under `../../src/**` as needed.
+- If failures show ESM export errors like "does not provide an export named ...", convert type/interface imports to `import type` and keep runtime imports separate.
+- If failures show drifting counts/IDs or growing arrays between tests, reset shared mutable module state in `beforeEach` (for example in-memory DB arrays).
 - If config mismatch causes "No tests found", update only the minimal `testMatch` needed.
 - Do not replace working scripts/config wholesale.
 - Read stderr output to understand the reason of failing before starting to write a patch for the test.

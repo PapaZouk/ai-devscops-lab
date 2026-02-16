@@ -63,6 +63,10 @@ STRICT STANDARDS:
 - Use relative paths exclusively.
 - Prefer deterministic tests.
 - Avoid brittle mocks when not necessary.
+- If a source module mutates shared singleton/module state (arrays/objects exported from another module), reset that state in beforeEach.
+- In ESM TypeScript tests, never import interfaces/types as runtime bindings. Use \`import type\` for types and separate runtime imports.
+- For mocks of relative modules in tests/, resolve paths from the test file location to actual src files (for example ../../src/repository/db.js), not from the source module's location.
+- After each failing run_tests, change assertions or fixture reset logic based on stderr; do not rerun the same failing expectations.
 - Never edit lockfiles directly. Update package.json and regenerate lockfiles via package-manager commands.`,
   defaultUserPrompt:
     "Scan the project and implement comprehensive unit tests for uncovered critical logic.",

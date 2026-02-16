@@ -77,6 +77,33 @@ function isDeliveryRunCommandCall(toolName: string, rawArgs: string): boolean {
     return false;
 }
 
+function deriveRunTestsFailureHint(stderr: string): string | null {
+    const s = (stderr || "").toLowerCase();
+    if (!s) return null;
+
+    if (
+        s.includes("could not locate module") &&
+        s.includes("mapped as:") &&
+        s.includes("moduleNameMapper".toLowerCase())
+    ) {
+        return "Jest module mapping error detected. Fix mock/import path to the real target module path from the test file (for example in tests/, use ../../src/... instead of ../...).";
+    }
+
+    if (s.includes("does not provide an export named")) {
+        return "Jest ESM import error detected. If importing a TypeScript interface/type, use `import type { ... }` and keep runtime imports separate.";
+    }
+
+    if (s.includes("received length") && s.includes("expected length")) {
+        return "State leakage detected across tests. Reset shared mutable module state in beforeEach (for example arrays/objects in singleton db modules).";
+    }
+
+    if (s.includes("expected") && s.includes("received")) {
+        return "Assertion mismatch detected. Update expected values to match real behavior from source code, not assumed IDs/counts.";
+    }
+
+    return null;
+}
+
 
 export async function startOrchestrator(config: AgentConfig, targetPath: string, userPrompt: string) {
     logger.info(chalk.blue.bold("🚀 Starting Orchestrator..."));
@@ -174,9 +201,10 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
     let turns = 0;
     const maxTurns = 40;
     const maxToolRetries = 3;
-    const maxRunTestsConsecutiveFailures = 8;
+    const maxRunTestsConsecutiveFailures = 6;
     const toolRetryCounter = new Map<string, number>();
     let consecutiveRunTestsFailures = 0;
+    let runTestsFailureStreakHinted = 0;
     let consecutiveEmptyAssistantTurns = 0;
     const isTestingAgent = config.name.toLowerCase().includes("testing");
     let hasPassingTestRun = false;
@@ -204,6 +232,7 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         if (message.tool_calls && message.tool_calls.length > 0) {
             consecutiveEmptyAssistantTurns = 0;
             const toolOutputs: any[] = [];
+            const postToolSystemMessages: string[] = [];
             for (const call of message.tool_calls) {
                 if (call.type !== 'function') {
                     toolOutputs.push({
@@ -313,6 +342,20 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                                     hasPassingTestRun = true;
                                     runTestsPassedThisAttempt = true;
                                 }
+                                if (runTestsPassedThisAttempt) {
+                                    runTestsFailureStreakHinted = 0;
+                                } else if (typeof parsed?.stderr === "string") {
+                                    const hint = deriveRunTestsFailureHint(parsed.stderr);
+                                    if (hint) {
+                                        runTestsFailureStreakHinted += 1;
+                                        if (runTestsFailureStreakHinted >= 2) {
+                                            postToolSystemMessages.push(
+                                                `Repeated run_tests failures detected. ${hint} ` +
+                                                "Read the failing test file and dependent runtime modules before rewriting tests."
+                                            );
+                                        }
+                                    }
+                                }
                             } catch {
                                 // Ignore parse failures; run_tests output is best-effort structured.
                             }
@@ -328,8 +371,6 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                         try {
                             const parsed = JSON.parse(toolText);
                             if (parsed?.success === true) {
-                                // A fresh test write is a meaningful state change. Allow run_tests retries again.
-                                consecutiveRunTestsFailures = 0;
                                 for (const key of [...toolRetryCounter.keys()]) {
                                     if (key.startsWith("run_tests:")) {
                                         toolRetryCounter.delete(key);
@@ -364,6 +405,12 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
             }
 
             messages.push(...toolOutputs);
+            if (postToolSystemMessages.length > 0) {
+                messages.push({
+                    role: "system",
+                    content: postToolSystemMessages.join("\n"),
+                });
+            }
             continue;
         }
 

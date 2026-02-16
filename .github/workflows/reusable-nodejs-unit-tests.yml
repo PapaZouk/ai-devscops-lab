@@ -195,7 +195,7 @@ jobs:
 
           PROMPT="Scan the codebase and implement unit tests for uncovered functions or modules, prioritizing critical and high-risk code. If test tooling is missing, add the required package.json test script and dependencies, run install to regenerate lockfiles, and run tests so the suite executes."
           if [ -n "${{ inputs.target_test_file }}" ]; then
-            PROMPT="Implement unit tests only for file ${{ inputs.target_test_file }}. Do not create tests for other files. Keep existing project test structure (for example tests/ next to src/ when present). Use the existing package.json test script if already defined. If test tooling is missing, add only what is required and run tests for the relevant scope."
+            PROMPT="Implement unit tests only for file ${{ inputs.target_test_file }}. Do not create tests for other files. Keep existing project test structure (for example tests/ next to src/ when present). Use the existing package.json test script if already defined. If test tooling is missing, add only what is required and run tests for the relevant scope. In ESM TypeScript tests, use import type for interfaces/types. If source logic uses shared mutable module state, reset it in beforeEach to avoid cross-test leakage. If Jest reports 'Could not locate module ... mapped as: $1', fix relative module paths from the test file location (for tests/** usually ../../src/**). After each run_tests failure, change the test based on stderr root cause; do not rerun the same failing expectations."
           fi
 
           npx tsx src/main.ts \
