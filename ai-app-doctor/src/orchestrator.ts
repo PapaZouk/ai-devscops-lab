@@ -24,6 +24,10 @@ const logger = getLogger("orchestrator");
 const MAX_HISTORY_TOOL_ARGS = 1500;
 const MAX_HISTORY_TOOL_OUTPUT = 12000;
 
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function truncate(text: string, maxChars: number): string {
     if (text.length <= maxChars) return text;
     const omitted = text.length - maxChars;
@@ -125,6 +129,45 @@ function deriveRunTestsFailureFingerprint(stderr: string): string {
     return s.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 2).join(" | ") || "unknown";
 }
 
+function extractRateLimitWaitMs(err: any): number {
+    const headers = (err?.headers ?? {}) as Record<string, string | string[] | undefined>;
+    const retryAfterRaw =
+        headers["retry-after"] ??
+        headers["Retry-After"] ??
+        headers["x-ratelimit-reset-requests"] ??
+        headers["x-ratelimit-reset-tokens"];
+    const retryAfterStr = Array.isArray(retryAfterRaw) ? retryAfterRaw[0] : retryAfterRaw;
+    if (retryAfterStr) {
+        const sec = Number(retryAfterStr);
+        if (Number.isFinite(sec) && sec > 0) return Math.ceil(sec * 1000);
+    }
+
+    const msg = String(err?.message ?? "");
+    const waitMatch = msg.match(/try again in\s*([\d.]+)\s*s/i);
+    if (waitMatch?.[1]) {
+        const sec = Number(waitMatch[1]);
+        if (Number.isFinite(sec) && sec > 0) return Math.ceil(sec * 1000);
+    }
+
+    return 6000;
+}
+
+function compactMessagesForRateLimit(messages: any[]): any[] {
+    if (messages.length <= 18) return messages;
+    const firstSystem = messages.find((m) => m?.role === "system");
+    const firstUser = messages.find((m) => m?.role === "user");
+    const tail = messages.slice(-14);
+
+    const compacted: any[] = [];
+    const seen = new Set<any>();
+    for (const candidate of [firstSystem, firstUser, ...tail]) {
+        if (!candidate || seen.has(candidate)) continue;
+        compacted.push(candidate);
+        seen.add(candidate);
+    }
+    return compacted;
+}
+
 
 export async function startOrchestrator(config: AgentConfig, targetPath: string, userPrompt: string) {
     logger.info(chalk.blue.bold("🚀 Starting Orchestrator..."));
@@ -188,6 +231,7 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
         fallbackModelFromEnv ||
         (config.model === "gpt-4o-mini" ? "gpt-4.1" : "");
     const escalateAfterFailures = Number(process.env.LM_ESCALATE_AFTER_FAILURES || "3");
+    const maxRateLimitRetries = Number(process.env.LM_MAX_RATE_LIMIT_RETRIES || "4");
     let currentModel = config.model;
     let modelEscalated = false;
     logger.info(chalk.blue(`Using LLM at ${url} with model ${currentModel}`));
@@ -256,14 +300,39 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
 
     while (turns < maxTurns) {
         turns++;
+        let response: Awaited<ReturnType<typeof openai.chat.completions.create>>;
+        let rateLimitAttempts = 0;
+        while (true) {
+            try {
+                response = await openai.chat.completions.create({
+                    model: currentModel,
+                    messages,
+                    tools: tools.map(t => ({ type: "function", function: t })),
+                    tool_choice: "auto",
+                    temperature: 0,
+                });
+                break;
+            } catch (err: any) {
+                const status = Number(err?.status ?? 0);
+                if (status !== 429) throw err;
 
-        const response = await openai.chat.completions.create({
-            model: currentModel,
-            messages,
-            tools: tools.map(t => ({ type: "function", function: t })),
-            tool_choice: "auto",
-            temperature: 0,
-        });
+                rateLimitAttempts += 1;
+                if (rateLimitAttempts > maxRateLimitRetries) {
+                    logger.error(chalk.red(`❌ Rate limit retries exceeded (${maxRateLimitRetries}) for model ${currentModel}.`));
+                    throw err;
+                }
+
+                const waitMs = extractRateLimitWaitMs(err) + Math.floor(Math.random() * 250);
+                logger.warn(
+                    chalk.yellow(
+                        `⚠️ LLM rate-limited (429) on ${currentModel}. Retrying in ${(waitMs / 1000).toFixed(2)}s ` +
+                        `(attempt ${rateLimitAttempts}/${maxRateLimitRetries}).`
+                    )
+                );
+                messages = compactMessagesForRateLimit(messages);
+                await sleep(waitMs);
+            }
+        }
 
         const message = response.choices[0].message;
         const finishReason = response.choices[0].finish_reason;

@@ -33,6 +33,11 @@ on:
         required: false
         type: number
         default: 3
+      llm_max_rate_limit_retries:
+        description: 'Maximum retries for LLM 429 responses before failing the run'
+        required: false
+        type: number
+        default: 4
       ai_tools_ref:
         description: 'Optional ref/branch for ai-tools checkout'
         required: false
@@ -218,6 +223,7 @@ jobs:
           LM_MODEL_NAME: ${{ inputs.llm_model_name }}
           LM_FALLBACK_MODEL_NAME: ${{ inputs.llm_fallback_model_name }}
           LM_ESCALATE_AFTER_FAILURES: ${{ inputs.llm_escalate_after_failures }}
+          LM_MAX_RATE_LIMIT_RETRIES: ${{ inputs.llm_max_rate_limit_retries }}
           SKIP_DELIVERY: ${{ (inputs.run_environment == 'dev') && 'true' || 'false' }}
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
           DEBUG: "orchestrator:*"
