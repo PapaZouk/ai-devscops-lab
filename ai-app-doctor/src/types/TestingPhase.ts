@@ -1,0 +1,1 @@
+export type TestingPhase = "discover" | "verify" | "remediate" | "done";

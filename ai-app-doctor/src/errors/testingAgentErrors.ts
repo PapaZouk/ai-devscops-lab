@@ -1,0 +1,2 @@
+export const TESTING_AGENT_FAILURE_SUMMARY_PROMPT = "You may now finalize with a failure summary only. Do not claim success. Include failing test scope, root cause, and next concrete fix.";
+export const RUN_TESTS_REMINDER_PROMPT = "Do not finalize yet. You must call run_tests and obtain {\"passed\": true} before producing a final response.";

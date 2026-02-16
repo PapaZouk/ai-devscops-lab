@@ -42,7 +42,7 @@
 - Before finishing, you MUST consult `skills/git/delivery/instructions.md`.
 - **Treatment Validation:** Always use `git_diff` to review dependency changes. Ensure no unrelated source files were modified.
 - **PR Management:** When creating the PR via `gh`, you MUST use the `--fill` or `--title/--body` flags to avoid interactive prompts.
-- **Example:** `run_command(command="gh pr create --title 'Security: Fix Snyk Vulnerabilities' --body 'Automated remediation of high-severity CVEs.'")`
+- **Example:** `run_command(command="gh", args=["pr","create","--title","Security: Fix Snyk Vulnerabilities","--body","Automated remediation of high-severity CVEs."])`
 
 ## Definition of Done
 - All targeted vulnerabilities from the Snyk report are resolved.

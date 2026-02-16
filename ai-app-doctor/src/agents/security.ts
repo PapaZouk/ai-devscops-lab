@@ -6,7 +6,7 @@ configDotenv();
 
 export const SecurityAgent: AgentConfig = {
   name: "Security Agent",
-  model: process.env.LM_MODEL_NAME || "gpt-4o",
+  model: process.env.LM_MODEL_NAME || "openai/gpt-oss-20b",
   systemPrompt: `You are a Senior DevSecOps Engineer.
   
 CORE MISSION:
