@@ -9,6 +9,7 @@ export async function setupLogger() {
         loggers: [
             { category: "main", lowestLevel: "debug", sinks: ["console"] },
             { category: "orchestrator", lowestLevel: "debug", sinks: ["console"] },
+            { category: "getSkillsPath", lowestLevel: "debug", sinks: ["console"] },
         ]
     });
 }
