@@ -2,6 +2,7 @@ import { configDotenv } from "dotenv";
 import { AgentConfig } from "../types/agentConfig.js";
 
 configDotenv();
+const TARGET_TEST_FILE = (process.env.TARGET_TEST_FILE || "").trim();
 
 export const TestingAgent: AgentConfig = {
   name: "Testing Agent",
@@ -69,11 +70,15 @@ STRICT STANDARDS:
     `TASK: ${issue}
     - Project Root: .
     - Skills Library: ./skills
+    ${TARGET_TEST_FILE ? `- TARGET TEST FILE (STRICT): ${TARGET_TEST_FILE}` : ""}
     - IMPORTANT:
       - Read and follow skills/testing/unit/instructions.md before writing tests.
+      ${TARGET_TEST_FILE ? `- You MUST create tests only for "${TARGET_TEST_FILE}".` : ""}
+      ${TARGET_TEST_FILE ? `- First, read_file and analyze_file for "${TARGET_TEST_FILE}" before writing any test.` : ""}
+      ${TARGET_TEST_FILE ? `- The test must exercise runtime behavior from "${TARGET_TEST_FILE}" (no fake local replacement classes).` : ""}
       - If a top-level tests/ directory exists, place new tests under tests/ (not src/__tests__/).
       - Prioritize unit tests over integration tests.
       - Always call run_tests with explicit test_path_pattern; do not call run_tests with {}.
       - Select test_path_pattern as a concrete file/directory path based on active repo convention: tests/unit, tests, src/__tests__, or __tests__.
-      - In TypeScript, import interfaces/types using 'import type' (never as runtime imports).`,
+      - In TypeScript, import interfaces/types using 'import type' when needed, but also import and exercise at least one runtime symbol from the target module.`,
 };

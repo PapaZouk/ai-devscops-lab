@@ -63,6 +63,20 @@ function sanitizeAssistantMessageForHistory(message: any) {
     };
 }
 
+function isDeliveryRunCommandCall(toolName: string, rawArgs: string): boolean {
+    if (toolName !== "run_command") return false;
+    try {
+        const parsed = JSON.parse(rawArgs || "{}") as { command?: string; path?: string };
+        const command = (parsed.command || "").trim();
+        const scriptPath = (parsed.path || "").trim();
+        if (command === "git" || command === "gh") return true;
+        if (scriptPath.includes("skills/git/delivery")) return true;
+    } catch {
+        return true; // be safe: malformed run_command args shouldn't bypass delivery guard
+    }
+    return false;
+}
+
 
 export async function startOrchestrator(config: AgentConfig, targetPath: string, userPrompt: string) {
     logger.info(chalk.blue.bold("🚀 Starting Orchestrator..."));
@@ -159,7 +173,10 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
 
     let turns = 0;
     const maxTurns = 40;
+    const maxToolRetries = 3;
+    const maxRunTestsConsecutiveFailures = 8;
     const toolRetryCounter = new Map<string, number>();
+    let consecutiveRunTestsFailures = 0;
     let consecutiveEmptyAssistantTurns = 0;
     const isTestingAgent = config.name.toLowerCase().includes("testing");
     let hasPassingTestRun = false;
@@ -207,14 +224,46 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                 const count = (toolRetryCounter.get(toolKey) || 0) + 1;
                 toolRetryCounter.set(toolKey, count);
 
-                if (count > 3) {
+                if (isTestingAgent && !hasPassingTestRun && isDeliveryRunCommandCall(toolName, rawArgs)) {
+                    logger.warn(
+                        chalk.yellow("🛑 Delivery blocked: run_tests has not passed yet.")
+                    );
+                    toolOutputs.push({
+                        role: "tool",
+                        tool_call_id: call.id,
+                        content: JSON.stringify({
+                            error: "DELIVERY_BLOCKED_BEFORE_TEST_PASS",
+                            message:
+                                "Delivery commands (git/gh) are blocked until run_tests returns {\"passed\": true}. " +
+                                "Implement/fix tests and rerun run_tests.",
+                        }),
+                    });
+                    continue;
+                }
+
+                if (toolName === "run_tests") {
+                    if (consecutiveRunTestsFailures >= maxRunTestsConsecutiveFailures) {
+                        logger.warn(chalk.red("🛑 Circuit Breaker: run_tests reached max consecutive failures."));
+                        toolOutputs.push({
+                            role: "tool",
+                            tool_call_id: call.id,
+                            content: JSON.stringify({
+                                error: "MAX_RUN_TESTS_RETRIES_REACHED",
+                                message:
+                                    `run_tests failed ${consecutiveRunTestsFailures} times consecutively. ` +
+                                    "Update tests or scope before retrying.",
+                            }),
+                        });
+                        continue;
+                    }
+                } else if (count > maxToolRetries) {
                     logger.warn(chalk.red(`🛑 Circuit Breaker: ${toolName} reached max retries.`));
                     toolOutputs.push({
                         role: "tool",
                         tool_call_id: call.id,
                         content: JSON.stringify({
                             error: "MAX_RETRIES_REACHED",
-                            message: "This fix failed 3 times. Stop and report the conflict."
+                            message: `This action failed ${maxToolRetries} times. Stop and report the conflict.`
                         })
                     });
                     continue;
@@ -240,29 +289,55 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                         console.log(chalk.gray(`🧾 Tool Output (${toolName}):\n${toolText}`));
                     }
 
-                    if (toolName === "run_tests" && toolText) {
+                    if (toolName === "run_tests") {
+                        let runTestsPassedThisAttempt = false;
+                        if (toolText) {
+                            try {
+                                const parsed = JSON.parse(toolText);
+                                if (parsed?.summary || typeof parsed?.stderr === "string") {
+                                    lastRunTestsSummary = JSON.stringify(
+                                        {
+                                            passed: parsed?.passed,
+                                            exitCode: parsed?.exitCode,
+                                            summary: parsed?.summary,
+                                            effectiveTestPathPattern: parsed?.effectiveTestPathPattern ?? null,
+                                            stderr: typeof parsed?.stderr === "string"
+                                                ? truncate(parsed.stderr, 800)
+                                                : "",
+                                        },
+                                        null,
+                                        2
+                                    );
+                                }
+                                if (parsed?.passed === true) {
+                                    hasPassingTestRun = true;
+                                    runTestsPassedThisAttempt = true;
+                                }
+                            } catch {
+                                // Ignore parse failures; run_tests output is best-effort structured.
+                            }
+                        }
+                        if (runTestsPassedThisAttempt) {
+                            consecutiveRunTestsFailures = 0;
+                        } else {
+                            consecutiveRunTestsFailures += 1;
+                        }
+                    }
+
+                    if (toolName === "write_test_file" && toolText) {
                         try {
                             const parsed = JSON.parse(toolText);
-                            if (parsed?.summary || typeof parsed?.stderr === "string") {
-                                lastRunTestsSummary = JSON.stringify(
-                                    {
-                                        passed: parsed?.passed,
-                                        exitCode: parsed?.exitCode,
-                                        summary: parsed?.summary,
-                                        effectiveTestPathPattern: parsed?.effectiveTestPathPattern ?? null,
-                                        stderr: typeof parsed?.stderr === "string"
-                                            ? truncate(parsed.stderr, 800)
-                                            : "",
-                                    },
-                                    null,
-                                    2
-                                );
-                            }
-                            if (parsed?.passed === true) {
-                                hasPassingTestRun = true;
+                            if (parsed?.success === true) {
+                                // A fresh test write is a meaningful state change. Allow run_tests retries again.
+                                consecutiveRunTestsFailures = 0;
+                                for (const key of [...toolRetryCounter.keys()]) {
+                                    if (key.startsWith("run_tests:")) {
+                                        toolRetryCounter.delete(key);
+                                    }
+                                }
                             }
                         } catch {
-                            // Ignore parse failures; run_tests output is best-effort structured.
+                            // Ignore parse failures; write_test_file output is best-effort structured.
                         }
                     }
 
@@ -277,6 +352,9 @@ export async function startOrchestrator(config: AgentConfig, targetPath: string,
                     });
                 } catch (toolErr: any) {
                     logger.error(chalk.red(`❌ Tool Error: ${toolErr.message}`));
+                    if (toolName === "run_tests") {
+                        consecutiveRunTestsFailures += 1;
+                    }
                     toolOutputs.push({
                         role: "tool",
                         tool_call_id: call.id,

@@ -456,6 +456,23 @@ Requires overwrite: true if the file already exists.`,
           };
         }
 
+        const targetTestFile = (process.env.TARGET_TEST_FILE || "").trim();
+        if (targetTestFile) {
+          const sourceBase = path.basename(targetTestFile).replace(/\.(ts|tsx|js|jsx)$/, "");
+          const testBase = path.basename(relPath).replace(/\.(test|spec)\.(ts|tsx|js|jsx)$/, "");
+          if (sourceBase && testBase && sourceBase !== testBase) {
+            return {
+              content: [{
+                type: "text",
+                text:
+                  `Refusing to write test "${relPath}" because TARGET_TEST_FILE is "${targetTestFile}". ` +
+                  `Expected test basename "${sourceBase}.test.*" (or *.spec.*).`,
+              }],
+              isError: true,
+            };
+          }
+        }
+
         try {
           await fs.access(resolved);
           if (!overwrite) {
