@@ -295,7 +295,7 @@ export function generateTestScaffold(
 /** Derive the canonical test file path from a source file path */
 export function deriveTestFilePath(
   sourcePath: string,
-  convention: "adjacent" | "__tests__" | "src/__tests__" = "__tests__"
+  convention: "adjacent" | "__tests__" | "src/__tests__" | "tests" = "__tests__"
 ): string {
   const dir = path.dirname(sourcePath);
   const base = path.basename(sourcePath).replace(/\.(ts|tsx|js|jsx)$/, "");
@@ -314,6 +314,20 @@ export function deriveTestFilePath(
         return path.join(projectRoot, "src", "__tests__", `${base}.test${ext}`);
       }
       return path.join(dir, "__tests__", `${base}.test${ext}`);
+    }
+    case "tests": {
+      // Keep project structure: mirror source paths under top-level tests/
+      // (e.g. src/api/authRoutes.ts -> tests/api/authRoutes.test.ts).
+      const parts = sourcePath.split(path.sep);
+      const srcIndex = parts.lastIndexOf("src");
+      if (srcIndex !== -1) {
+        const projectRoot = parts.slice(0, srcIndex).join(path.sep);
+        const relUnderSrc = parts.slice(srcIndex + 1, parts.length - 1);
+        return path.join(projectRoot, "tests", ...relUnderSrc, `${base}.test${ext}`);
+      }
+
+      const parent = path.dirname(sourcePath);
+      return path.join(parent, "..", "tests", `${base}.test${ext}`);
     }
   }
 }

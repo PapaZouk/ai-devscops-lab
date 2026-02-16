@@ -56,6 +56,24 @@ const ALLOWED_TEST_PACKAGES = [
 ] as const;
 type AllowedTestPackage = (typeof ALLOWED_TEST_PACKAGES)[number];
 
+function inferTestConvention(
+  sourcePath: string,
+  structure: Awaited<ReturnType<typeof scanProjectStructure>>
+): "adjacent" | "__tests__" | "src/__tests__" | "tests" {
+  const normalizedSource = sourcePath.replace(/\\/g, "/");
+  const normalizedTests = structure.testFiles.map((f) => f.replace(/\\/g, "/"));
+
+  const hasTestsFolder = normalizedTests.some((f) => f.includes("/tests/"));
+  const hasSrcUnderscoreTests = normalizedTests.some((f) => f.includes("/src/") && f.includes("/__tests__/"));
+  const hasUnderscoreTests = normalizedTests.some((f) => f.includes("/__tests__/"));
+
+  if (hasTestsFolder) return "tests";
+  if (hasSrcUnderscoreTests) return "src/__tests__";
+  if (hasUnderscoreTests) return "__tests__";
+  if (normalizedSource.includes("/src/")) return "src/__tests__";
+  return "__tests__";
+}
+
 /** Register all tools on the MCP server */
 export function registerTools(server: McpServer): void {
 
@@ -305,10 +323,9 @@ Returns the generated test content — use write_test_file to save it.`,
         .optional()
         .describe("Override the output test file path (relative to PROJECT_ROOT). Auto-derived if omitted."),
       convention: z
-        .enum(["adjacent", "__tests__", "src/__tests__"])
+        .enum(["adjacent", "__tests__", "src/__tests__", "tests"])
         .optional()
-        .default("__tests__")
-        .describe("Placement: adjacent to source, __tests__ subfolder, or src/__tests__"),
+        .describe("Placement: adjacent to source, __tests__ subfolder, src/__tests__, or tests folder"),
       framework: z
         .enum(["jest", "vitest"])
         .optional()
@@ -321,10 +338,13 @@ Returns the generated test content — use write_test_file to save it.`,
     async ({ file_path, test_file_path, convention, framework, include_edge_cases }) => {
       toolLogger.info("generate_test_scaffold called", { file_path });
       try {
+        const scanPath = resolveProjectPath(null);
+        const structure = await scanProjectStructure(scanPath);
         const resolvedSource  = resolveProjectPath(file_path);
+        const selectedConvention = convention ?? inferTestConvention(resolvedSource, structure);
         const resolvedTestPath = test_file_path
           ? resolveProjectPath(test_file_path)
-          : deriveTestFilePath(resolvedSource, convention ?? "__tests__");
+          : deriveTestFilePath(resolvedSource, selectedConvention);
 
         toolLogger.debug("scaffold paths", { source: resolvedSource, test: resolvedTestPath });
 
@@ -423,6 +443,17 @@ Requires overwrite: true if the file already exists.`,
       toolLogger.info("write_test_file called", { file_path, overwrite });
       try {
         const resolved = resolveProjectPath(file_path);
+        const relPath = path.relative(getProjectRoot(), resolved).replace(/\\/g, "/");
+        const testFilePattern = /(?:^|\/)(?:tests\/.*|__tests__\/.*|.*\.(test|spec)\.(ts|tsx|js|jsx)$)/;
+        if (!testFilePattern.test(relPath)) {
+          return {
+            content: [{
+              type: "text",
+              text: `Refusing to write non-test file: "${relPath}". Use a test path under tests/, __tests__/, or a *.test|*.spec file.`,
+            }],
+            isError: true,
+          };
+        }
 
         try {
           await fs.access(resolved);
@@ -1272,10 +1303,13 @@ a broken configuration.`,
 
         let effectiveTestPathPattern = test_path_pattern;
         if (!effectiveTestPathPattern) {
-          // Default to unit tests when available so missing integration dependencies
-          // (express/supertest/server wiring) don't block unit-test workflows.
+          // Default to explicit test directories first so existing Jest testMatch
+          // conventions are respected and we avoid broad "src" patterns.
           const hasUnitDir = structure.testFiles.some((f) =>
             f.includes("/tests/unit/") || f.includes("\\tests\\unit\\")
+          );
+          const hasTestsDir = structure.testFiles.some((f) =>
+            f.includes("/tests/") || f.includes("\\tests\\")
           );
           const hasSrcTests = structure.testFiles.some((f) =>
             (f.includes("/src/") || f.includes("\\src\\")) &&
@@ -1287,18 +1321,29 @@ a broken configuration.`,
 
           if (hasUnitDir) {
             effectiveTestPathPattern = "tests/unit";
+          } else if (hasTestsDir) {
+            effectiveTestPathPattern = "tests";
           } else if (hasSrcTests) {
-            effectiveTestPathPattern = "src";
+            effectiveTestPathPattern = "src/__tests__";
           } else if (hasAnyDoubleUnderscoreTests) {
             effectiveTestPathPattern = "__tests__";
           }
         }
 
         if (effectiveTestPathPattern) {
-          const resolvedPattern = path.isAbsolute(effectiveTestPathPattern)
-            ? effectiveTestPathPattern
-            : path.join(projectRoot, effectiveTestPathPattern);
-          args.push(resolvedPattern);
+          // Jest path arguments behave better with concrete file/dir paths than glob-like
+          // strings passed after "npm test --". Normalize wildcard patterns to a stable prefix.
+          const wildcardIndex = effectiveTestPathPattern.search(/[*?[{]/);
+          const patternForRunner = wildcardIndex >= 0
+            ? effectiveTestPathPattern.slice(0, wildcardIndex).replace(/[\\/]+$/, "")
+            : effectiveTestPathPattern;
+
+          if (patternForRunner) {
+            const resolvedPattern = path.isAbsolute(patternForRunner)
+              ? patternForRunner
+              : path.join(projectRoot, patternForRunner);
+            args.push(resolvedPattern);
+          }
         }
 
         if (test_name_pattern) {
